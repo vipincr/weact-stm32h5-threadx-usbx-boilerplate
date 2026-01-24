@@ -1,0 +1,67 @@
+# Build outputs
+/build/
+/Build/
+/Debug/
+/Release/
+**/Debug/
+**/Release/
+**/build/
+**/cmake-build-*/
+**/CMakeFiles/
+**/CMakeCache.txt
+**/Makefile
+**/*.map
+**/*.elf
+**/*.axf
+**/*.hex
+**/*.bin
+**/*.list
+**/*.lst
+**/*.o
+**/*.obj
+**/*.d
+**/*.a
+**/*.lib
+**/*.so
+**/*.dll
+**/*.dylib
+**/*.su
+**/*.gcda
+**/*.gcno
+
+# STM32CubeIDE
+/.project
+/.cproject
+/.settings/
+/.mxproject.local
+**/.settings/
+
+# Keil MDK
+/MDK-ARM/Objects/
+/MDK-ARM/Listings/
+/MDK-ARM/ExtSettings/
+**/*.uvoptx
+**/*.uvguix
+**/*.uvgui*
+**/*.bak
+**/*.dep
+**/*.crf
+**/*.tra
+**/*.iex
+
+# IAR
+**/*.eww
+**/*.ewp
+**/*.ewd
+**/*.ewt
+**/settings/
+
+# VS Code
+/.vscode/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
