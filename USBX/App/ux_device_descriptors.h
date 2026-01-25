@@ -47,7 +47,7 @@ extern "C" {
 #define USBD_COMPOSITE_USE_IAD                         1U
 #define USBD_DEVICE_FRAMEWORK_BUILDER_ENABLED          1U
 
-#define USBD_FRAMEWORK_MAX_DESC_SZ                     256U
+#define USBD_FRAMEWORK_MAX_DESC_SZ                     512U
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
@@ -264,7 +264,7 @@ uint16_t USBD_Get_Configuration_Number(uint8_t class_type, uint8_t interface_typ
 #define USBD_LANGID_STRING                            1033
 #define USBD_MANUFACTURER_STRING                      "Gramini Labs"
 #define USBD_PRODUCT_STRING                           "Gramini JPEG Encoder"
-#define USBD_SERIAL_NUMBER                            "000000000001"
+#define USBD_SERIAL_NUMBER                            "001"
 
 #define USB_DESC_TYPE_INTERFACE                       0x04U
 #define USB_DESC_TYPE_ENDPOINT                        0x05U

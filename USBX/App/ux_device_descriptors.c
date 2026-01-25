@@ -225,8 +225,10 @@ uint8_t *USBD_Get_String_Framework(ULONG *Length)
 
   /* USER CODE END String_Framework1 */
 
+  count += len + 1U;
+
   /* Get the length of USBD_string_framework */
-  *Length = strlen((const char *)USBD_string_framework);
+  *Length = count;
 
   return USBD_string_framework;
 }
@@ -246,7 +248,7 @@ uint8_t *USBD_Get_Language_Id_Framework(ULONG *Length)
   USBD_language_id_framework[count++] = USBD_LANGID_STRING >> 8;
 
   /* Get the length of USBD_language_id_framework */
-  *Length = strlen((const char *)USBD_language_id_framework);
+  *Length = count;
 
   return USBD_language_id_framework;
 }

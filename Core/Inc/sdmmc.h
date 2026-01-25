@@ -42,6 +42,8 @@ void MX_SDMMC1_SD_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+int SDMMC1_SafeInit(void);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

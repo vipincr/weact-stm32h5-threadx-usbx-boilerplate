@@ -114,6 +114,31 @@
 
 /* USER CODE BEGIN 1 */
 
+/* Standalone bring-up mode (no ThreadX scheduler).
+ * This is used to isolate "USB doesn't enumerate" issues from ThreadX.
+ */
+#if defined(USBX_STANDALONE_BRINGUP)
+
+/* Enable USBX standalone mode (no RTOS objects/threads). */
+#ifndef UX_STANDALONE
+#define UX_STANDALONE
+#endif
+
+/* Match HAL tick granularity (1ms). */
+#ifndef UX_PERIODIC_RATE
+#define UX_PERIODIC_RATE 1000
+#endif
+
+/* Redirect USBX time/IRQ primitives to HAL-backed functions.
+ * IMPORTANT: these are object-like macros (no parentheses) so that USBX headers
+ * can still declare the corresponding extern functions without macro-arg errors.
+ */
+#define _ux_utility_time_get            usbx_standalone_time_get
+#define _ux_utility_interrupt_disable   usbx_standalone_irq_disable
+#define _ux_utility_interrupt_restore   usbx_standalone_irq_restore
+
+#endif /* USBX_STANDALONE_BRINGUP */
+
 /* USER CODE END 1 */
 
 /* Define various build options for the USBX port.  The application should either make changes
@@ -166,7 +191,7 @@
 /* Defined, this value is the maximum number of classes in the device stack that can be loaded by
    USBX.  */
 
-#define UX_MAX_SLAVE_CLASS_DRIVER    1
+#define UX_MAX_SLAVE_CLASS_DRIVER    2
 
 /* Defined, this value represents the number of different host controllers available in the system.
    For USB 1.1 support, this value will usually be 1. For USB 2.0 support, this value can be more

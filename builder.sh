@@ -25,10 +25,44 @@ show_usage() {
     echo -e "${BLUE}Usage:${NC}"
     echo -e "  $0 clean"
     echo -e "  $0 build [--type Debug|Release]"
-    echo -e "  $0 flash [--type Debug|Release] [--address ADDR]"
+    echo -e "  $0 flash [--type Debug|Release] [--address ADDR] [--no-build]"
     echo -e "  $0 all [--type Debug|Release] [--address ADDR]"
     echo -e "  $0 enumerate"
     echo -e "  $0 monitor [--tool TOOL] [--baud BAUD] [--device DEVICE]"
+}
+
+print_artifact_info() {
+    local image="$1"
+    echo -e "${BLUE}[INFO]${NC} Flash image: $(cd "$(dirname "$image")" && pwd)/$(basename "$image")"
+    ls -l "$image" || true
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$image" || true
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$image" || true
+    else
+        echo -e "${YELLOW}[WARN]${NC} No sha256 tool found (shasum/sha256sum)"
+    fi
+}
+
+warn_if_artifact_stale() {
+    local artifact="$1"
+
+    # If any relevant project file is newer than the artifact, warn loudly.
+    # This guards against accidentally flashing an old build (e.g. running `flash` without rebuilding).
+    local newer
+    newer=$(find \
+        Core AZURE_RTOS USBX cmake \
+        CMakeLists.txt CMakePresets.json WeActSTM32H5.ioc \
+        -type f \( -name '*.c' -o -name '*.h' -o -name '*.s' -o -name '*.S' -o -name '*.ld' -o -name '*.cmake' -o -name 'CMakeLists.txt' -o -name '*.ioc' \) \
+        -newer "$artifact" 2>/dev/null | head -n 1)
+
+    if [ -n "$newer" ]; then
+        echo -e "${YELLOW}[WARN]${NC} Build artifact looks stale vs: $newer"
+        echo -e "${YELLOW}[WARN]${NC} Re-run: $0 build --type ${BUILD_TYPE} (or omit --no-build)"
+        return 1
+    fi
+
+    return 0
 }
 
 clean_project() {
@@ -194,15 +228,25 @@ enumerate_devices() {
 flash_project() {
     local preset="$1"
     local elf_path="$BUILD_DIR/$preset/${PROJECT_NAME}.elf"
+    local bin_path="$BUILD_DIR/$preset/${PROJECT_NAME}.bin"
     local image="$elf_path"
 
+    # For STM32_Programmer_CLI with an explicit flash address, prefer a raw binary.
+    if [ -f "$bin_path" ]; then
+        image="$bin_path"
+    fi
+
     if [ ! -f "$image" ]; then
-        echo -e "${RED}[ERROR]${NC} ELF not found: $image"
+        echo -e "${RED}[ERROR]${NC} Image not found: $image"
         return 1
     fi
 
+    print_artifact_info "$image"
+
     if detect_dfu_device; then
         echo -e "${BLUE}[INFO]${NC} DFU device detected (${DFU_PORT}). Flashing with STM32_Programmer_CLI..."
+        # Refuse to flash if inputs are newer than the artifact (unless the user intentionally bypasses build).
+        warn_if_artifact_stale "$image" || return 1
         "$STM32CLI" -c port="$DFU_PORT" -d "$image" "$FLASH_ADDRESS" -v || return 1
         echo -e "${GREEN}[SUCCESS]${NC} DFU flash complete"
         echo -e "${YELLOW}[WARN]${NC} DFU reset is not supported; please reset the board manually"
@@ -217,6 +261,7 @@ flash_project() {
     fi
 
     echo -e "${BLUE}[INFO]${NC} Flashing with STM32_Programmer_CLI to ${FLASH_ADDRESS}..."
+    warn_if_artifact_stale "$image" || return 1
     "$STM32CLI" -c port=usb1 -d "$image" "$FLASH_ADDRESS" || return 1
     echo -e "${GREEN}[SUCCESS]${NC} Flash complete"
     post_flash_check
@@ -317,16 +362,23 @@ case "$COMMAND" in
         configure_project "$BUILD_TYPE" && build_project "$BUILD_TYPE"
         exit $?;;
     flash)
+        DO_BUILD=1
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 --type|-t)
                     BUILD_TYPE="$2"; shift 2;;
                 --address|-a)
                     FLASH_ADDRESS="$2"; shift 2;;
+                --no-build)
+                    DO_BUILD=0; shift 1;;
                 *)
                     echo -e "${RED}[ERROR]${NC} Unknown option: $1"; exit 1;;
             esac
         done
+        if [ "$DO_BUILD" -eq 1 ]; then
+            configure_project "$BUILD_TYPE" || exit $?
+            build_project "$BUILD_TYPE" || exit $?
+        fi
         flash_project "$BUILD_TYPE"
         exit $?;;
     all)

@@ -23,6 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "led_status.h"
+
+#include "main.h"
 
 /* USER CODE END Includes */
 
@@ -77,11 +80,25 @@ void MX_ThreadX_Init(void)
 {
   /* USER CODE BEGIN Before_Kernel_Start */
 
+  /* Short “about to enter ThreadX” marker.
+   * Leave LED OFF afterwards so the USBX device thread can own the LED state.
+   */
+  LED_On();
+  HAL_Delay(50U);
+  LED_Off();
+  HAL_Delay(50U);
+  LED_On();
+  HAL_Delay(50U);
+  LED_Off();
+
   /* USER CODE END Before_Kernel_Start */
 
   tx_kernel_enter();
 
   /* USER CODE BEGIN Kernel_Start_Error */
+
+  /* tx_kernel_enter() should never return. */
+  LED_FatalStageCode(30U, 1U);
 
   /* USER CODE END Kernel_Start_Error */
 }

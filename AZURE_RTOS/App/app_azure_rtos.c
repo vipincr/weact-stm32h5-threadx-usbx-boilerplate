@@ -23,6 +23,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "led_status.h"
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,6 +90,8 @@ VOID tx_application_define(VOID *first_unused_memory)
   {
     /* USER CODE BEGIN TX_Byte_Pool_Error */
 
+    LED_FatalStageCode(21U, 1U);
+
     /* USER CODE END TX_Byte_Pool_Error */
   }
   else
@@ -101,6 +105,8 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != TX_SUCCESS)
     {
       /* USER CODE BEGIN  App_ThreadX_Init_Error */
+
+      LED_FatalStageCode(22U, (uint8_t)status);
       while(1)
       {
       }
@@ -116,6 +122,8 @@ VOID tx_application_define(VOID *first_unused_memory)
   {
     /* USER CODE BEGIN UX_Device_Byte_Pool_Error */
 
+    LED_FatalStageCode(23U, 1U);
+
     /* USER CODE END UX_Device_Byte_Pool_Error */
   }
   else
@@ -129,6 +137,8 @@ VOID tx_application_define(VOID *first_unused_memory)
     if (status != UX_SUCCESS)
     {
       /* USER CODE BEGIN  MX_USBX_Device_Init_Error */
+
+      LED_FatalStageCode(24U, (uint8_t)status);
       while(1)
       {
       }

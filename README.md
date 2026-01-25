@@ -46,9 +46,10 @@ Configured in [AZURE_RTOS/App/app_azure_rtos.c](AZURE_RTOS/App/app_azure_rtos.c)
 
 ### USB device stack (USBX)
 
+
 - USBX system memory: 5KB (`USBX_DEVICE_MEMORY_STACK_SIZE`).
 - USB device stack initialized with framework descriptors and string framework.
-- **Only the MSC class is currently registered**.
+- USB composite device enabled: **CDC ACM + MSC**.
 
 Implementation in [USBX/App/app_usbx_device.c](USBX/App/app_usbx_device.c) and descriptors in [USBX/App/ux_device_descriptors.c](USBX/App/ux_device_descriptors.c).
 
@@ -68,31 +69,28 @@ Defined in [Core/Src/sdmmc.c](Core/Src/sdmmc.c).
 
 ## USB composite device status
 
-The **intended composite device** is CDC ACM + MSC. The current codebase **only enables MSC**:
+The device enumerates as a composite device:
 
-- USB framework builder contains MSC descriptors only.
-- `UserClassInstance[]` includes only `CLASS_TYPE_MSC`.
-- MSC class is registered at runtime; CDC ACM is not registered.
+- **CDC ACM**: virtual serial port used for logs.
+- **MSC**: exposes the SD card as a Mass Storage device.
 
 See [USBX/App/ux_device_descriptors.c](USBX/App/ux_device_descriptors.c) and [USBX/App/app_usbx_device.c](USBX/App/app_usbx_device.c).
 
-### What is implemented
+### LED status behavior
 
-- USBX device stack initialization.
-- MSC class registration.
-- Descriptor strings:
-  - Manufacturer: “Gramini Labs”
-  - Product: “Gramini JPEG Encoder”
+The BLUE LED (PB2) is used as a status indicator and is driven from a **low-priority ThreadX thread**:
 
-From [USBX/App/ux_device_descriptors.h](USBX/App/ux_device_descriptors.h).
+- **Off**: CDC is not active.
+- **Long blink**: USB is configured and CDC is present, but the host has not opened the CDC port yet (DTR not asserted).
+- **Solid on**: host opened the CDC port (DTR asserted) and logs are enabled.
+
+Implementation: [Core/Src/led_status.c](Core/Src/led_status.c) and CDC line-state handling in [USBX/App/ux_device_cdc_acm.c](USBX/App/ux_device_cdc_acm.c).
 
 ### What is still stubbed / missing
 
-- **MSC backing store** is not implemented: all storage callbacks are stubs and return success with no SD access.
-  - See [USBX/App/ux_device_msc.c](USBX/App/ux_device_msc.c).
-- **CDC ACM class** is not registered and not present in descriptors.
-- **Peripheral init calls** are missing in the main boot path:
-  - `MX_USB_PCD_Init()` and `MX_SDMMC1_SD_Init()` are never called.
+
+- SD card/MSC behavior still depends on the SD card being present and formatted.
+- If the SD card is missing or not responding, MSC reads/writes can fail.
 
 These gaps must be addressed before the composite device is functional.
 
@@ -169,3 +167,14 @@ Use `builder.sh` for clean/build/flash/monitor convenience. It uses the CMake pr
 
 - Generated code uses **USER CODE** regions. Keep changes inside those blocks to avoid being overwritten by STM32CubeMX regeneration.
 - Update [WeActSTM32H5.ioc](WeActSTM32H5.ioc) if you change clocks, USB, SDMMC, or middleware configuration.
+
+## Troubleshooting (macOS)
+
+If `./builder.sh enumerate` shows no new USB device:
+
+- Ensure you are using a **data-capable** USB-C cable (many charge-only cables exist).
+- If you flashed via DFU, **reset the board** after flashing (DFU reset is not supported by this script).
+- Run `system_profiler SPUSBDataType` (without filters) and search for any new device when you plug/unplug the board.
+- Watch for new serial ports: `ls /dev/cu.* /dev/tty.* | grep -i "usb\|modem"`.
+
+To turn the LED polarity if needed (some boards differ), adjust `LED_STATUS_ACTIVE_LOW` in [Core/Inc/led_status.h](Core/Inc/led_status.h).

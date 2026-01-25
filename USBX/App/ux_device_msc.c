@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sdmmc.h"
+#include "logger.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,10 +50,18 @@
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 static int32_t check_sd_status(void);
+static int32_t ensure_sd_initialized(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+static int32_t ensure_sd_initialized(void)
+{
+  /* SDMMC1_SafeInit() is idempotent and non-fatal. */
+  return (SDMMC1_SafeInit() == 0) ? 0 : -1;
+}
+
 /**
   * @brief  check_sd_status
   *         check SD card Transfer Status.
@@ -61,6 +70,11 @@ static int32_t check_sd_status(void);
   */
 static int32_t check_sd_status(void)
 {
+  if (ensure_sd_initialized() != 0)
+  {
+    return -1;
+  }
+
   uint32_t start = HAL_GetTick();
 
   while (HAL_GetTick() - start < SD_TIMEOUT)
@@ -85,6 +99,14 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Activate */
   UX_PARAMETER_NOT_USED(storage_instance);
+  if (ensure_sd_initialized() == 0)
+  {
+    LOG_INFO_TAG("MSC", "MSC activated - SD ready");
+  }
+  else
+  {
+    LOG_INFO_TAG("MSC", "MSC activated - SD not ready");
+  }
   /* USER CODE END USBD_STORAGE_Activate */
 
   return;
@@ -284,8 +306,19 @@ ULONG USBD_STORAGE_GetMediaLastLba(VOID)
 
   /* USER CODE BEGIN USBD_STORAGE_GetMediaLastLba */
   HAL_SD_CardInfoTypeDef CardInfo;
-  HAL_SD_GetCardInfo(&hsd1, &CardInfo);
-  LastLba = (ULONG)(CardInfo.BlockNbr - 1);
+
+  if (ensure_sd_initialized() != 0)
+  {
+    /* No media: report a minimal 1-block LUN so enumeration still works. */
+    return 0U;
+  }
+
+  if (HAL_SD_GetCardInfo(&hsd1, &CardInfo) != HAL_OK)
+  {
+    return 0U;
+  }
+
+  LastLba = (ULONG)(CardInfo.BlockNbr - 1U);
   /* USER CODE END USBD_STORAGE_GetMediaLastLba */
 
   return LastLba;
@@ -303,7 +336,17 @@ ULONG USBD_STORAGE_GetMediaBlocklength(VOID)
 
   /* USER CODE BEGIN USBD_STORAGE_GetMediaBlocklength */
   HAL_SD_CardInfoTypeDef CardInfo;
-  HAL_SD_GetCardInfo(&hsd1, &CardInfo);
+
+  if (ensure_sd_initialized() != 0)
+  {
+    return 512U;
+  }
+
+  if (HAL_SD_GetCardInfo(&hsd1, &CardInfo) != HAL_OK)
+  {
+    return 512U;
+  }
+
   MediaBlockLen = (ULONG)CardInfo.BlockSize;
   /* USER CODE END USBD_STORAGE_GetMediaBlocklength */
 

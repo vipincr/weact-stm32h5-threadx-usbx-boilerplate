@@ -29,7 +29,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "led_status.h"
+#include "sdmmc.h"
 
+#include "app_usbx_device.h"
+#include "ux_api.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,11 +55,16 @@
 
 /* USER CODE BEGIN PV */
 
+/* Updated by main() at key checkpoints so Error_Handler can report where we died. */
+volatile uint8_t g_boot_stage = 0U;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+
+static void MX_CRS_Init_For_USB(void);
 
 /* USER CODE END PFP */
 
@@ -70,9 +79,8 @@ void SystemClock_Config(void);
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
-
+  g_boot_stage = 1U;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -81,14 +89,18 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
+  /* Signal HAL initialization complete */
+  /* Note: LED blinks are done after GPIO init */
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  g_boot_stage = 2U;
 
+  /* USB FS uses HSI48; enable CRS trimming (matches WeAct examples). */
+  MX_CRS_Init_For_USB();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -99,10 +111,47 @@ int main(void)
   MX_DCACHE1_Init();
   MX_FMAC_Init();
   /* USER CODE BEGIN 2 */
+  g_boot_stage = 3U;
 
+  LED_Init();
+  /* Minimal boot sign-of-life (single short blink). */
+  LED_On();
+  HAL_Delay(100U);
+  LED_Off();
+  /* Leave LED OFF here; the USBX device thread will drive it so
+   * a solid ON indicates USB bring-up, and OFF indicates USB IRQ traffic.
+   */
+
+  /* Do not init SDMMC here: it can block if no card is present.
+   * MSC will lazy-init SDMMC on first access.
+   */
+  g_boot_stage = 4U;
+
+  /* Next: ThreadX/USBX init */
+  g_boot_stage = 5U;
+
+#if defined(USBX_STANDALONE_BRINGUP)
+  /* USBX standalone bring-up (no ThreadX). */
+  (void)MX_USBX_Device_Standalone_Init();
+  MX_USB_PCD_Init();
+
+  /* Set Rx and Tx FIFO / PMA map (matches WeAct baseline + our CDC endpoints). */
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x14);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x54);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0x94);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0xD4);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x114);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x154);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x194);
+
+  ux_dcd_stm32_initialize((ULONG)USB_DRD_FS, (ULONG)&hpcd_USB_DRD_FS);
+  HAL_PCD_Start(&hpcd_USB_DRD_FS);
+#endif
   /* USER CODE END 2 */
 
+#if !defined(USBX_STANDALONE_BRINGUP)
   MX_ThreadX_Init();
+#endif
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -113,6 +162,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if defined(USBX_STANDALONE_BRINGUP)
+    /* Standalone USBX needs periodic polling. */
+    ux_system_tasks_run();
+    HAL_Delay(1U);
+#endif
   }
   /* USER CODE END 3 */
 }
@@ -186,6 +240,24 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+static void MX_CRS_Init_For_USB(void)
+{
+  RCC_CRSInitTypeDef RCC_CRSInitStruct = {0};
+
+  /* Enable the CRS APB clock */
+  __HAL_RCC_CRS_CLK_ENABLE();
+
+  /* Configure CRS to synchronize HSI48 to USB SOF (1kHz). */
+  RCC_CRSInitStruct.Prescaler = RCC_CRS_SYNC_DIV1;
+  RCC_CRSInitStruct.Source = RCC_CRS_SYNC_SOURCE_USB;
+  RCC_CRSInitStruct.Polarity = RCC_CRS_SYNC_POLARITY_RISING;
+  RCC_CRSInitStruct.ReloadValue = __HAL_RCC_CRS_RELOADVALUE_CALCULATE(48000000, 1000);
+  RCC_CRSInitStruct.ErrorLimitValue = 34;
+  RCC_CRSInitStruct.HSI48CalibrationValue = 32;
+
+  HAL_RCCEx_CRSConfig(&RCC_CRSInitStruct);
+}
+
 /* USER CODE END 4 */
 
 /**
@@ -217,11 +289,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
+  /* Report fatal HAL errors using the LED and stop. */
+  LED_FatalStageCode((uint8_t)g_boot_stage, 1U);
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

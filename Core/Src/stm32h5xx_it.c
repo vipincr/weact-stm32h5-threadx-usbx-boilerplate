@@ -181,6 +181,9 @@ void USB_DRD_FS_IRQHandler(void)
 {
   /* USER CODE BEGIN USB_DRD_FS_IRQn 0 */
 
+  extern volatile uint32_t g_usb_pcd_irq_count;
+  g_usb_pcd_irq_count++;
+
   /* USER CODE END USB_DRD_FS_IRQn 0 */
   HAL_PCD_IRQHandler(&hpcd_USB_DRD_FS);
   /* USER CODE BEGIN USB_DRD_FS_IRQn 1 */

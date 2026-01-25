@@ -31,6 +31,17 @@
 #include "ux_device_stack.h"
 #include "ux_utility.h"
 
+/* Application-level USB enumeration diagnostics (defined in Core/Src/usb.c). */
+extern volatile uint32_t g_usb_reset_count;
+extern volatile uint32_t g_usb_setup_count;
+extern volatile uint32_t g_usb_set_address_count;
+extern volatile uint32_t g_usb_set_config_count;
+extern volatile uint8_t  g_usb_last_bmRequestType;
+extern volatile uint8_t  g_usb_last_bRequest;
+extern volatile uint16_t g_usb_last_wValue;
+extern volatile uint16_t g_usb_last_wIndex;
+extern volatile uint16_t g_usb_last_wLength;
+
 
 static inline void _ux_dcd_stm32_setup_in(UX_DCD_STM32_ED * ed, UX_SLAVE_TRANSFER *transfer_request)
 {
@@ -237,6 +248,35 @@ UX_DCD_STM32_ED         *ed;
 UX_SLAVE_TRANSFER       *transfer_request;
 UX_SLAVE_ENDPOINT       *endpoint;
 
+
+    /* Diagnostics: record last setup packet and count key requests.
+     * Must be side-effect free for USBX.
+     */
+    {
+        const uint8_t *setup = (const uint8_t *)hpcd->Setup;
+        const uint8_t bmRequestType = setup[0];
+        const uint8_t bRequest = setup[1];
+        const uint16_t wValue = (uint16_t)((uint16_t)setup[2] | ((uint16_t)setup[3] << 8));
+        const uint16_t wIndex = (uint16_t)((uint16_t)setup[4] | ((uint16_t)setup[5] << 8));
+        const uint16_t wLength = (uint16_t)((uint16_t)setup[6] | ((uint16_t)setup[7] << 8));
+
+        g_usb_setup_count++;
+        g_usb_last_bmRequestType = bmRequestType;
+        g_usb_last_bRequest = bRequest;
+        g_usb_last_wValue = wValue;
+        g_usb_last_wIndex = wIndex;
+        g_usb_last_wLength = wLength;
+
+        /* Standard device requests of interest during enumeration. */
+        if ((bmRequestType == 0x00U) && (bRequest == 0x05U))
+        {
+            g_usb_set_address_count++;
+        }
+        if ((bmRequestType == 0x00U) && (bRequest == 0x09U))
+        {
+            g_usb_set_config_count++;
+        }
+    }
 
     /* Get the pointer to the DCD.  */
     dcd =  &_ux_system_slave -> ux_system_slave_dcd;
@@ -741,6 +781,9 @@ UX_SLAVE_ENDPOINT       *endpoint;
 /**************************************************************************/
 void HAL_PCD_ResetCallback(PCD_HandleTypeDef *hpcd)
 {
+
+    /* Diagnostics: count bus resets. */
+    g_usb_reset_count++;
 
     /* If the device is attached or configured, we need to disconnect it.  */
     if (_ux_system_slave -> ux_system_slave_device.ux_slave_device_state !=  UX_DEVICE_RESET)

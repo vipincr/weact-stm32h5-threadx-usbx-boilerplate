@@ -24,6 +24,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "usb.h"
+#include "logger.h"
+#include "led_status.h"
+
+#if defined(USBX_STANDALONE_BRINGUP)
+#include "stm32h5xx_hal.h"
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,11 +59,20 @@ static TX_THREAD ux_device_app_thread;
 
 /* USER CODE BEGIN PV */
 extern PCD_HandleTypeDef hpcd_USB_DRD_FS;
+extern volatile uint32_t g_usb_pcd_irq_count;
+extern volatile uint32_t g_usb_reset_count;
+extern volatile uint32_t g_usb_setup_count;
+extern volatile uint32_t g_usb_set_config_count;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 static VOID app_ux_device_thread_entry(ULONG thread_input);
 /* USER CODE BEGIN PFP */
+
+/* Some USBX builds include standalone task pumping; others don't.
+ * Use a weak reference so we can call it only when linked in.
+ */
+extern UINT _ux_system_tasks_run(VOID) __attribute__((weak));
 
 /* USER CODE END PFP */
 
@@ -90,7 +105,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
                        USBX_DEVICE_MEMORY_STACK_SIZE, TX_NO_WAIT) != TX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_ALLOCATE_STACK_ERROR */
-    return TX_POOL_ERROR;
+    LED_FatalStageCode(1U, 1U);
     /* USER CODE END USBX_ALLOCATE_STACK_ERROR */
   }
 
@@ -98,7 +113,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   if (ux_system_initialize(pointer, USBX_DEVICE_MEMORY_STACK_SIZE, UX_NULL, 0) != UX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_SYSTEM_INITIALIZE_ERROR */
-    return UX_ERROR;
+    LED_FatalStageCode(2U, 1U);
     /* USER CODE END USBX_SYSTEM_INITIALIZE_ERROR */
   }
 
@@ -117,18 +132,19 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   language_id_framework = USBD_Get_Language_Id_Framework(&language_id_framework_length);
 
   /* Install the device portion of USBX */
-  if (ux_device_stack_initialize(device_framework_high_speed,
-                                 device_framework_hs_length,
-                                 device_framework_full_speed,
-                                 device_framework_fs_length,
-                                 string_framework,
-                                 string_framework_length,
-                                 language_id_framework,
-                                 language_id_framework_length,
-                                 UX_NULL) != UX_SUCCESS)
+  ret = ux_device_stack_initialize(device_framework_high_speed,
+                                  device_framework_hs_length,
+                                  device_framework_full_speed,
+                                  device_framework_fs_length,
+                                  string_framework,
+                                  string_framework_length,
+                                  language_id_framework,
+                                  language_id_framework_length,
+                                  UX_NULL);
+  if (ret != UX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_DEVICE_INITIALIZE_ERROR */
-    return UX_ERROR;
+    LED_FatalStageCode(3U, (uint8_t)ret);
     /* USER CODE END USBX_DEVICE_INITIALIZE_ERROR */
   }
 
@@ -155,7 +171,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
                                      &cdc_acm_parameter) != UX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_DEVICE_CDC_ACM_REGISTER_ERROR */
-    return UX_ERROR;
+    LED_FatalStageCode(4U, 1U);
     /* USER CODE END USBX_DEVICE_CDC_ACM_REGISTER_ERROR */
   }
 
@@ -215,7 +231,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
                                      &storage_parameter) != UX_SUCCESS)
   {
     /* USER CODE BEGIN USBX_DEVICE_STORAGE_REGISTER_ERROR */
-    return UX_ERROR;
+    LED_FatalStageCode(5U, 1U);
     /* USER CODE END USBX_DEVICE_STORAGE_REGISTER_ERROR */
   }
 
@@ -224,7 +240,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
                        TX_NO_WAIT) != TX_SUCCESS)
   {
     /* USER CODE BEGIN MAIN_THREAD_ALLOCATE_STACK_ERROR */
-    return TX_POOL_ERROR;
+    LED_FatalStageCode(6U, 1U);
     /* USER CODE END MAIN_THREAD_ALLOCATE_STACK_ERROR */
   }
 
@@ -235,12 +251,14 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
                        UX_DEVICE_APP_THREAD_START_OPTION) != TX_SUCCESS)
   {
     /* USER CODE BEGIN MAIN_THREAD_CREATE_ERROR */
-    return TX_THREAD_ERROR;
+    LED_FatalStageCode(7U, 1U);
     /* USER CODE END MAIN_THREAD_CREATE_ERROR */
   }
 
   /* USER CODE BEGIN MX_USBX_Device_Init1 */
-
+  /* Logger runs in its own low-priority thread; CDC activate will only enable it when DTR is set. */
+  Logger_Init();
+  (void)Logger_ThreadCreate(memory_ptr);
   /* USER CODE END MX_USBX_Device_Init1 */
 
   return ret;
@@ -256,33 +274,177 @@ static VOID app_ux_device_thread_entry(ULONG thread_input)
   /* USER CODE BEGIN app_ux_device_thread_entry */
   TX_PARAMETER_NOT_USED(thread_input);
 
+  /* Defensive: make sure we are not running with IRQs masked.
+   * If ThreadX low-level init ever leaves PRIMASK/BASEPRI asserted,
+   * USB will appear totally dead (no enumeration).
+   */
+  __enable_irq();
+  __set_BASEPRI(0U);
+
   /* Initialize the USB device controller HAL driver */
   MX_USB_PCD_Init();
 
-  /* Configure PMA (Packet Memory Area) for endpoints */
+  /* Configure PMA (Packet Memory Area) for endpoints.
+   * Layout matches the known-good WeAct USBX examples (MSC), extended for CDC.
+   */
   /* EP0 OUT */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x20);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x14);
   /* EP0 IN */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x60);
-  /* MSC EP IN (0x81) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0xA0);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x54);
+
   /* MSC EP OUT (0x01) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0xE0);
-  /* CDC CMD EP IN (0x82) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x120);
-  /* CDC DATA EP IN (0x83) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x160);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0x94);
+  /* MSC EP IN (0x81) */
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0xD4);
+
   /* CDC DATA EP OUT (0x03) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x1A0);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x114);
+  /* CDC DATA EP IN (0x83) */
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x154);
+  /* CDC CMD EP IN (0x82) */
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x194);
 
   /* Initialize the device controller driver */
   _ux_dcd_stm32_initialize((ULONG)USB_DRD_FS, (ULONG)&hpcd_USB_DRD_FS);
 
   /* Start the USB device */
   HAL_PCD_Start(&hpcd_USB_DRD_FS);
+
+  /* Nothing else to do in this thread for RTOS USBX.
+   * USBX classes run their own threads.
+   */
+  for (;;)
+  {
+    tx_thread_sleep((ULONG)TX_TIMER_TICKS_PER_SECOND);
+  }
   /* USER CODE END app_ux_device_thread_entry */
 }
 
 /* USER CODE BEGIN 1 */
+
+#if defined(USBX_STANDALONE_BRINGUP)
+ULONG usbx_standalone_time_get(VOID)
+{
+  return (ULONG)HAL_GetTick();
+}
+
+ALIGN_TYPE usbx_standalone_irq_disable(VOID)
+{
+  ALIGN_TYPE primask = (ALIGN_TYPE)__get_PRIMASK();
+  __disable_irq();
+  return primask;
+}
+
+VOID usbx_standalone_irq_restore(ALIGN_TYPE primask)
+{
+  __set_PRIMASK((uint32_t)primask);
+}
+#endif /* USBX_STANDALONE_BRINGUP */
+
+UINT MX_USBX_Device_Standalone_Init(VOID)
+{
+#if defined(USBX_STANDALONE_BRINGUP)
+  UINT ret;
+  UCHAR *device_framework_high_speed;
+  UCHAR *device_framework_full_speed;
+  ULONG device_framework_hs_length;
+  ULONG device_framework_fs_length;
+  ULONG string_framework_length;
+  ULONG language_id_framework_length;
+  UCHAR *string_framework;
+  UCHAR *language_id_framework;
+
+  /* USBX memory pool for standalone mode. */
+  static UCHAR ux_standalone_memory[USBX_DEVICE_MEMORY_STACK_SIZE];
+
+  ret = ux_system_initialize(ux_standalone_memory,
+                             (ULONG)sizeof(ux_standalone_memory),
+                             UX_NULL,
+                             0U);
+  if (ret != UX_SUCCESS)
+  {
+    return ret;
+  }
+
+  device_framework_high_speed = USBD_Get_Device_Framework_Speed(USBD_HIGH_SPEED,
+                                                                &device_framework_hs_length);
+
+  device_framework_full_speed = USBD_Get_Device_Framework_Speed(USBD_FULL_SPEED,
+                                                                &device_framework_fs_length);
+
+  string_framework = USBD_Get_String_Framework(&string_framework_length);
+  language_id_framework = USBD_Get_Language_Id_Framework(&language_id_framework_length);
+
+  ret = ux_device_stack_initialize(device_framework_high_speed,
+                                   device_framework_hs_length,
+                                   device_framework_full_speed,
+                                   device_framework_fs_length,
+                                   string_framework,
+                                   string_framework_length,
+                                   language_id_framework,
+                                   language_id_framework_length,
+                                   UX_NULL);
+  if (ret != UX_SUCCESS)
+  {
+    return ret;
+  }
+
+  /* CDC ACM parameters */
+  cdc_acm_parameter.ux_slave_class_cdc_acm_instance_activate   = USBD_CDC_ACM_Activate;
+  cdc_acm_parameter.ux_slave_class_cdc_acm_instance_deactivate = USBD_CDC_ACM_Deactivate;
+  cdc_acm_parameter.ux_slave_class_cdc_acm_parameter_change    = USBD_CDC_ACM_ParameterChange;
+
+  cdc_acm_configuration_number = USBD_Get_Configuration_Number(CLASS_TYPE_CDC_ACM, 0);
+  cdc_acm_interface_number = USBD_Get_Interface_Number(CLASS_TYPE_CDC_ACM, 0);
+
+  ret = ux_device_stack_class_register(_ux_system_slave_class_cdc_acm_name,
+                                       ux_device_class_cdc_acm_entry,
+                                       cdc_acm_configuration_number,
+                                       cdc_acm_interface_number,
+                                       &cdc_acm_parameter);
+  if (ret != UX_SUCCESS)
+  {
+    return ret;
+  }
+
+  /* MSC parameters */
+  storage_parameter.ux_slave_class_storage_instance_activate   = USBD_STORAGE_Activate;
+  storage_parameter.ux_slave_class_storage_instance_deactivate = USBD_STORAGE_Deactivate;
+  storage_parameter.ux_slave_class_storage_parameter_number_lun = STORAGE_NUMBER_LUN;
+
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_last_lba =
+    USBD_STORAGE_GetMediaLastLba();
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_block_length =
+    USBD_STORAGE_GetMediaBlocklength();
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_type = 0;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_removable_flag = STORAGE_REMOVABLE_FLAG;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_read_only_flag = STORAGE_READ_ONLY;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_read = USBD_STORAGE_Read;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_write = USBD_STORAGE_Write;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_flush = USBD_STORAGE_Flush;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_status = USBD_STORAGE_Status;
+  storage_parameter.ux_slave_class_storage_parameter_lun[0].ux_slave_class_storage_media_notification = USBD_STORAGE_Notification;
+
+  storage_configuration_number = USBD_Get_Configuration_Number(CLASS_TYPE_MSC, 0);
+  storage_interface_number = USBD_Get_Interface_Number(CLASS_TYPE_MSC, 0);
+
+  ret = ux_device_stack_class_register(_ux_system_slave_class_storage_name,
+                                       ux_device_class_storage_entry,
+                                       storage_configuration_number,
+                                       storage_interface_number,
+                                       &storage_parameter);
+  if (ret != UX_SUCCESS)
+  {
+    return ret;
+  }
+
+  /* Logger is ThreadX-based; keep it inert in standalone bring-up. */
+  Logger_Init();
+
+  return UX_SUCCESS;
+#else
+  return UX_ERROR;
+#endif
+}
 
 /* USER CODE END 1 */

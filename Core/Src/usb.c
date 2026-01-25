@@ -67,6 +67,16 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
   {
   /* USER CODE BEGIN USB_DRD_FS_MspInit 0 */
 
+    /* Configure USB FS pins (DM/DP) to AF10 (USB). Zephyr DTS does this via pinctrl. */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = GPIO_PIN_11 | GPIO_PIN_12;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF10_USB;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /* USER CODE END USB_DRD_FS_MspInit 0 */
 
   /** Initializes the peripherals clock
@@ -87,6 +97,12 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_SetPriority(USB_DRD_FS_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(USB_DRD_FS_IRQn);
   /* USER CODE BEGIN USB_DRD_FS_MspInit 1 */
+
+    /* Match WeAct USBX examples: keep USB IRQ at highest priority.
+     * This avoids edge cases where RTOS critical sections (BASEPRI) mask the IRQ.
+     * If/when we confirm enumeration is stable, we can revisit RTOS-friendly priorities.
+     */
+    HAL_NVIC_SetPriority(USB_DRD_FS_IRQn, 0, 0);
 
   /* USER CODE END USB_DRD_FS_MspInit 1 */
   }
@@ -112,5 +128,20 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* pcdHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* Debug counter to confirm USB IRQ activity (incremented in USB_DRD_FS_IRQHandler). */
+volatile uint32_t g_usb_pcd_irq_count = 0U;
+
+/* Enumeration diagnostics (updated from USBX STM32 DCD callbacks). */
+volatile uint32_t g_usb_reset_count = 0U;
+volatile uint32_t g_usb_setup_count = 0U;
+volatile uint32_t g_usb_set_address_count = 0U;
+volatile uint32_t g_usb_set_config_count = 0U;
+
+volatile uint8_t  g_usb_last_bmRequestType = 0U;
+volatile uint8_t  g_usb_last_bRequest = 0U;
+volatile uint16_t g_usb_last_wValue = 0U;
+volatile uint16_t g_usb_last_wIndex = 0U;
+volatile uint16_t g_usb_last_wLength = 0U;
 
 /* USER CODE END 1 */

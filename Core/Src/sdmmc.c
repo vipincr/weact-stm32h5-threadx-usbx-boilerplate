@@ -150,4 +150,30 @@ void HAL_SD_MspDeInit(SD_HandleTypeDef* sdHandle)
 
 /* USER CODE BEGIN 1 */
 
+int SDMMC1_SafeInit(void)
+{
+  /* Avoid repeated re-init attempts (especially if no card is inserted). */
+  static uint8_t initialized = 0U;
+
+  if (initialized != 0U)
+  {
+    return 0;
+  }
+
+  hsd1.Instance = SDMMC1;
+  hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
+  hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
+  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
+  hsd1.Init.ClockDiv = 8;
+
+  if (HAL_SD_Init(&hsd1) != HAL_OK)
+  {
+    return -1;
+  }
+
+  initialized = 1U;
+  return 0;
+}
+
 /* USER CODE END 1 */
