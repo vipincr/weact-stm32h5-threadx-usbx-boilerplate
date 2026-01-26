@@ -41,7 +41,7 @@ extern "C" {
 #define USBD_MAX_CLASS_INTERFACES                      11U
 
 /* Temporarily disable MSC to test CDC stability */
-#define USBD_MSC_CLASS_ACTIVATED                       0U
+#define USBD_MSC_CLASS_ACTIVATED                       1U
 #define USBD_CDC_ACM_CLASS_ACTIVATED                   1U
 
 #define USBD_CONFIG_MAXPOWER                           250U

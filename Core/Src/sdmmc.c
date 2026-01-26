@@ -21,7 +21,7 @@
 #include "sdmmc.h"
 
 /* USER CODE BEGIN 0 */
-
+#include "logger.h"
 /* USER CODE END 0 */
 
 SD_HandleTypeDef hsd1;
@@ -150,30 +150,70 @@ void HAL_SD_MspDeInit(SD_HandleTypeDef* sdHandle)
 
 /* USER CODE BEGIN 1 */
 
+static uint8_t sd_initialized = 0U;
+static uint8_t sd_init_failed = 0U;
+
 int SDMMC1_SafeInit(void)
 {
-  /* Avoid repeated re-init attempts (especially if no card is inserted). */
-  static uint8_t initialized = 0U;
-
-  if (initialized != 0U)
+  /* Already initialized successfully */
+  if (sd_initialized != 0U)
   {
     return 0;
   }
 
+  /* Don't retry if already failed (avoid repeated blocking attempts) */
+  if (sd_init_failed != 0U)
+  {
+    return -1;
+  }
+
+  LOG_INFO_TAG("SD", "Initializing SD card...");
+
+  /* IMPORTANT: SD cards MUST start in 1-bit mode, then switch to 4-bit */
   hsd1.Instance = SDMMC1;
   hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
   hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
-  hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;  /* Start with 1-bit */
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
   hsd1.Init.ClockDiv = 8;
 
   if (HAL_SD_Init(&hsd1) != HAL_OK)
   {
+    LOG_ERROR_TAG("SD", "HAL_SD_Init failed (no card?)");
+    sd_init_failed = 1U;
     return -1;
   }
 
-  initialized = 1U;
+  /* Now switch to 4-bit mode for better performance */
+  if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK)
+  {
+    LOG_WARN_TAG("SD", "4-bit mode failed, using 1-bit");
+    /* Continue with 1-bit mode - still functional */
+  }
+  else
+  {
+    LOG_INFO_TAG("SD", "Switched to 4-bit mode");
+  }
+
+  /* Get card info for logging */
+  HAL_SD_CardInfoTypeDef cardInfo;
+  if (HAL_SD_GetCardInfo(&hsd1, &cardInfo) == HAL_OK)
+  {
+    uint32_t sizeMB = (uint32_t)((uint64_t)cardInfo.BlockNbr * cardInfo.BlockSize / 1048576ULL);
+    LOG_INFO_TAG("SD", "Card: %lu blocks x %lu bytes = %lu MB",
+                 (unsigned long)cardInfo.BlockNbr,
+                 (unsigned long)cardInfo.BlockSize,
+                 (unsigned long)sizeMB);
+  }
+
+  sd_initialized = 1U;
+  LOG_INFO_TAG("SD", "SD card initialized successfully");
   return 0;
+}
+
+int SDMMC1_IsInitialized(void)
+{
+  return (sd_initialized != 0U) ? 1 : 0;
 }
 
 /* USER CODE END 1 */

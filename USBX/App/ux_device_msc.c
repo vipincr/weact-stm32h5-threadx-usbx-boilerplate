@@ -159,12 +159,19 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Read blocks from SD card */
   if (HAL_SD_ReadBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
+    LOG_ERROR_TAG("MSC", "Read failed at LBA %lu", (unsigned long)lba);
     return UX_ERROR;
   }
 
-  /* Wait until transfer is complete */
+  /* Wait until transfer is complete - WITH TIMEOUT */
+  uint32_t wait_start = HAL_GetTick();
   while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
   {
+    if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
+    {
+      LOG_ERROR_TAG("MSC", "Read wait timeout at LBA %lu", (unsigned long)lba);
+      return UX_ERROR;
+    }
   }
   /* USER CODE END USBD_STORAGE_Read */
 
@@ -202,12 +209,19 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Write blocks to SD card */
   if (HAL_SD_WriteBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
+    LOG_ERROR_TAG("MSC", "Write failed at LBA %lu", (unsigned long)lba);
     return UX_ERROR;
   }
 
-  /* Wait until transfer is complete */
+  /* Wait until transfer is complete - WITH TIMEOUT */
+  uint32_t wait_start = HAL_GetTick();
   while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
   {
+    if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
+    {
+      LOG_ERROR_TAG("MSC", "Write wait timeout at LBA %lu", (unsigned long)lba);
+      return UX_ERROR;
+    }
   }
   /* USER CODE END USBD_STORAGE_Write */
 

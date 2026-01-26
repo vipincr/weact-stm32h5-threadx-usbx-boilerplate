@@ -43,6 +43,7 @@ void MX_SDMMC1_SD_Init(void);
 /* USER CODE BEGIN Prototypes */
 
 int SDMMC1_SafeInit(void);
+int SDMMC1_IsInitialized(void);
 
 /* USER CODE END Prototypes */
 
