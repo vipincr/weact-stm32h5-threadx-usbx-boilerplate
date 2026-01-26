@@ -22,6 +22,7 @@
 #include "stm32h5xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "led_status.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -86,7 +87,14 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* Rapid LED blink to indicate hard fault */
+  volatile uint32_t led_state = 0;
+  while (1)
+  {
+    if (led_state) { LED_On(); } else { LED_Off(); }
+    led_state = !led_state;
+    for (volatile uint32_t i = 0; i < 100000; i++) { __NOP(); }
+  }
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {

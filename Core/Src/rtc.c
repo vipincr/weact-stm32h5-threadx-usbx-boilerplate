@@ -144,4 +144,37 @@ void HAL_RTC_MspDeInit(RTC_HandleTypeDef* rtcHandle)
 
 /* USER CODE BEGIN 1 */
 
+/**
+  * @brief  Read RTC Backup Register
+  * @param  regIndex: Backup register index (0-31)
+  * @retval Backup register value
+  */
+uint32_t RTC_ReadBackupRegister(uint32_t regIndex)
+{
+  if (regIndex > 31U) {
+    return 0U;
+  }
+  
+  /* Backup registers are at RTC base + 0x50 + (4 * index) */
+  volatile uint32_t *bkpReg = (volatile uint32_t *)(RTC_BASE + 0x50U + (regIndex * 4U));
+  return *bkpReg;
+}
+
+/**
+  * @brief  Write RTC Backup Register
+  * @param  regIndex: Backup register index (0-31)
+  * @param  value: Value to write
+  * @retval None
+  */
+void RTC_WriteBackupRegister(uint32_t regIndex, uint32_t value)
+{
+  if (regIndex > 31U) {
+    return;
+  }
+  
+  /* Backup registers are at RTC base + 0x50 + (4 * index) */
+  volatile uint32_t *bkpReg = (volatile uint32_t *)(RTC_BASE + 0x50U + (regIndex * 4U));
+  *bkpReg = value;
+}
+
 /* USER CODE END 1 */

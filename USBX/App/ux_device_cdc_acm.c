@@ -26,6 +26,7 @@
 #include "logger.h"
 #include "led_status.h"
 #include "ux_device_class_cdc_acm.h"
+#include "stm32h5xx_hal.h"  /* For FLASH registers */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -79,8 +80,46 @@ static void cdc_update_led_from_line_state(UX_SLAVE_CLASS_CDC_ACM *instance)
   {
     if ((cdc_last_line_state & UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_DTR) == 0U)
     {
+      extern volatile uint32_t g_last_reset_flags;
+      extern volatile uint32_t g_reboot_count;
+      
       Logger_SetCdcInstance(cdc_acm_instance_ptr);
+      
+      /* Log connection and system info */
       LOG_INFO_TAG("CDC", "CDC connected (DTR asserted)");
+      LOG_INFO_TAG("SYS", "STM32H5 USBX Composite Device Ready");
+      LOG_INFO_TAG("SYS", "CDC ACM + MSC (SD Card)");
+      
+      /* Log reboot counter */
+      LOG_INFO_TAG("SYS", "Reboot count: %lu", g_reboot_count);
+      
+      /* Log raw reset flags for debugging */
+      LOG_INFO_TAG("RST", "RCC_RSR raw: 0x%08lX", g_last_reset_flags);
+      
+      /* Log reset cause */
+      if (g_last_reset_flags & (1UL << 26)) { /* IWDGRSTF */
+        LOG_WARN_TAG("RST", "IWDGRSTF set - Independent Watchdog");
+      }
+      if (g_last_reset_flags & (1UL << 25)) { /* WWDGRSTF */
+        LOG_WARN_TAG("RST", "WWDGRSTF set - Window Watchdog");
+      }
+      if (g_last_reset_flags & (1UL << 28)) { /* LPWRRSTF */
+        LOG_WARN_TAG("RST", "LPWRRSTF set - Low Power Error");
+      }
+      if (g_last_reset_flags & (1UL << 24)) { /* SFTRSTF */
+        LOG_INFO_TAG("RST", "SFTRSTF set - Software Reset");
+      }
+      if (g_last_reset_flags & (1UL << 23)) { /* BORRSTF */
+        LOG_INFO_TAG("RST", "BORRSTF set - Brown-out/POR");
+      }
+      if (g_last_reset_flags & (1UL << 22)) { /* PINRSTF */
+        LOG_INFO_TAG("RST", "PINRSTF set - NRST pin");
+      }
+      
+      /* Log option byte info */
+      uint32_t optsr = FLASH->OPTSR_CUR;
+      LOG_INFO_TAG("OPT", "OPTSR_CUR: 0x%08lX", optsr);
+      LOG_INFO_TAG("OPT", "IWDG_SW=%d (1=SW, 0=HW)", (optsr & (1UL << 4)) ? 1 : 0);
     }
   }
   else
@@ -220,5 +259,20 @@ UINT USBD_CDC_ACM_Read(UCHAR *buffer, ULONG length, ULONG *actual_length)
   }
 
   return status;
+}
+
+/**
+  * @brief  USBD_CDC_ACM_PollLineState
+  *         Periodically poll and update line state (DTR/RTS).
+  *         Call this from main loop to detect DTR changes that
+  *         might not trigger ParameterChange callback.
+  * @retval none
+  */
+VOID USBD_CDC_ACM_PollLineState(VOID)
+{
+  if (cdc_acm_instance_ptr != UX_NULL)
+  {
+    cdc_update_led_from_line_state(cdc_acm_instance_ptr);
+  }
 }
 /* USER CODE END 1 */

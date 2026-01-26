@@ -46,7 +46,11 @@ USBD_DevClassHandleTypeDef  USBD_Device_FS, USBD_Device_HS;
 
 uint8_t UserClassInstance[USBD_MAX_CLASS_INTERFACES] = {
   CLASS_TYPE_CDC_ACM,
+#if USBD_MSC_CLASS_ACTIVATED == 1U
   CLASS_TYPE_MSC,
+#else
+  CLASS_TYPE_NONE,
+#endif
 };
 
 /* The generic device descriptor buffer that will be filled by builder

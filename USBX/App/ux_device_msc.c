@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "sdmmc.h"
 #include "logger.h"
+#include "ux_device_class_storage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -259,7 +260,24 @@ UINT USBD_STORAGE_Status(VOID *storage_instance, ULONG lun, ULONG media_id,
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_id);
-  UX_PARAMETER_NOT_USED(media_status);
+  
+  /* Report actual SD card status to the host */
+  if (ensure_sd_initialized() != 0)
+  {
+    /* No SD card present - report media not present */
+    if (media_status != UX_NULL)
+    {
+      *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_NOT_READY;
+    }
+    /* Still return SUCCESS - the error is in media_status */
+  }
+  else
+  {
+    if (media_status != UX_NULL)
+    {
+      *media_status = 0U; /* Media OK */
+    }
+  }
   /* USER CODE END USBD_STORAGE_Status */
 
   return status;

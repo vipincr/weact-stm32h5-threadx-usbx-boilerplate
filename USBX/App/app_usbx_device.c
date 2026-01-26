@@ -175,6 +175,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
     /* USER CODE END USBX_DEVICE_CDC_ACM_REGISTER_ERROR */
   }
 
+#if USBD_MSC_CLASS_ACTIVATED == 1U
   /* Initialize the storage class parameters for the device */
   storage_parameter.ux_slave_class_storage_instance_activate   = USBD_STORAGE_Activate;
   storage_parameter.ux_slave_class_storage_instance_deactivate = USBD_STORAGE_Deactivate;
@@ -234,6 +235,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
     LED_FatalStageCode(5U, 1U);
     /* USER CODE END USBX_DEVICE_STORAGE_REGISTER_ERROR */
   }
+#endif /* USBD_MSC_CLASS_ACTIVATED */
 
   /* Allocate the stack for device application main thread */
   if (tx_byte_allocate(byte_pool, (VOID **) &pointer, UX_DEVICE_APP_THREAD_STACK_SIZE,

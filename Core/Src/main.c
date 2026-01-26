@@ -34,6 +34,7 @@
 #include "sdmmc.h"
 
 #include "app_usbx_device.h"
+#include "ux_device_cdc_acm.h"
 #include "ux_api.h"
 /* USER CODE END Includes */
 
@@ -59,6 +60,12 @@
 /* Updated by main() at key checkpoints so Error_Handler can report where we died. */
 volatile uint8_t g_boot_stage = 0U;
 
+/* Reset cause flags captured at boot */
+volatile uint32_t g_last_reset_flags = 0U;
+
+/* Reboot counter stored in backup register 0 */
+volatile uint32_t g_reboot_count = 0U;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -71,6 +78,14 @@ static void MX_CRS_Init_For_USB(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* Extern declarations for RTC backup functions */
+extern uint32_t RTC_ReadBackupRegister(uint32_t regIndex);
+extern void RTC_WriteBackupRegister(uint32_t regIndex, uint32_t value);
+
+#define BKUP_REBOOT_COUNTER_IDX  0U
+#define BKUP_MAGIC_IDX           1U
+#define BKUP_MAGIC_VALUE         0xDEADBEEFU
 
 /* USER CODE END 0 */
 
@@ -90,8 +105,6 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  /* Signal HAL initialization complete */
-  /* Note: LED blinks are done after GPIO init */
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -99,6 +112,26 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
   g_boot_stage = 2U;
+
+  /* Check and log reset cause */
+  {
+    uint32_t reset_flags = RCC->RSR;
+    if (reset_flags & RCC_RSR_IWDGRSTF) {
+      /* IWDG reset - log later when CDC is ready */
+    } else if (reset_flags & RCC_RSR_WWDGRSTF) {
+      /* WWDG reset */
+    } else if (reset_flags & RCC_RSR_SFTRSTF) {
+      /* Software reset */
+    } else if (reset_flags & RCC_RSR_BORRSTF) {
+      /* Brown-out reset */
+    } else if (reset_flags & RCC_RSR_PINRSTF) {
+      /* Pin reset (NRST) */
+    }
+    /* Store for later logging */
+    g_last_reset_flags = reset_flags;
+    /* Clear reset flags */
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+  }
 
   /* USB FS uses HSI48; enable CRS trimming (matches WeAct examples). */
   MX_CRS_Init_For_USB();
@@ -124,9 +157,22 @@ int main(void)
    * a solid ON indicates USB bring-up, and OFF indicates USB IRQ traffic.
    */
   
+  /* Track reboot count using RTC backup registers (persists across resets) */
+  HAL_PWR_EnableBkUpAccess();
+  if (RTC_ReadBackupRegister(BKUP_MAGIC_IDX) != BKUP_MAGIC_VALUE) {
+    /* First boot after power cycle - initialize */
+    RTC_WriteBackupRegister(BKUP_MAGIC_IDX, BKUP_MAGIC_VALUE);
+    RTC_WriteBackupRegister(BKUP_REBOOT_COUNTER_IDX, 0U);
+    g_reboot_count = 0U;
+  } else {
+    /* Subsequent reset - increment counter */
+    g_reboot_count = RTC_ReadBackupRegister(BKUP_REBOOT_COUNTER_IDX) + 1U;
+    RTC_WriteBackupRegister(BKUP_REBOOT_COUNTER_IDX, g_reboot_count);
+  }
+  
   /* Log boot messages - these will be buffered until CDC connects */
   LOG_INFO_TAG("BOOT", "System Reset");
-  LOG_INFO_TAG("BOOT", "Blink done, entering kernel...");
+  LOG_INFO_TAG("BOOT", "Reboot #%lu", g_reboot_count);
 
   /* Do not init SDMMC here: it can block if no card is present.
    * MSC will lazy-init SDMMC on first access.
@@ -179,15 +225,37 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  static uint32_t uptime_seconds = 0U;
+  static uint32_t last_tick = 0U;
+  static uint32_t loop_count = 0U;
+  
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 #if defined(USBX_STANDALONE_BRINGUP)
+    /* ALWAYS feed hardware watchdog - it's enabled in option bytes.
+     * This is unconditional because the detection may not work before FLASH is ready.
+     */
     /* Standalone USBX needs periodic polling. */
     ux_system_tasks_run();
+    
+    /* Poll CDC line state to detect DTR changes (reconnection). */
+    USBD_CDC_ACM_PollLineState();
+    
     Logger_Run();
+    
+    /* Uptime logging every 10 seconds */
+    loop_count++;
+    uint32_t now = HAL_GetTick();
+    if ((now - last_tick) >= 10000U) {
+      uptime_seconds += 10U;
+      last_tick = now;
+      LOG_INFO_TAG("DBG", "Uptime: %lus, loops: %lu", uptime_seconds, loop_count);
+      loop_count = 0U;
+    }
+    
     HAL_Delay(1U);
 #endif
   }

@@ -57,6 +57,7 @@ VOID USBD_CDC_ACM_ParameterChange(VOID *cdc_acm_instance);
 /* USER CODE BEGIN EFP */
 UINT USBD_CDC_ACM_Write(UCHAR *buffer, ULONG length, ULONG *actual_length);
 UINT USBD_CDC_ACM_Read(UCHAR *buffer, ULONG length, ULONG *actual_length);
+VOID USBD_CDC_ACM_PollLineState(VOID);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
