@@ -29,6 +29,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "logger.h"
 #include "led_status.h"
 #include "sdmmc.h"
 
@@ -105,15 +106,16 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_ICACHE_Init();
+  /* MX_ICACHE_Init(); */
   MX_RTC_Init();
   MX_CORDIC_Init();
-  MX_DCACHE1_Init();
+  /* MX_DCACHE1_Init(); */
   MX_FMAC_Init();
   /* USER CODE BEGIN 2 */
   g_boot_stage = 3U;
 
   LED_Init();
+
   /* Minimal boot sign-of-life (single short blink). */
   LED_On();
   HAL_Delay(100U);
@@ -121,6 +123,10 @@ int main(void)
   /* Leave LED OFF here; the USBX device thread will drive it so
    * a solid ON indicates USB bring-up, and OFF indicates USB IRQ traffic.
    */
+  
+  /* Log boot messages - these will be buffered until CDC connects */
+  LOG_INFO_TAG("BOOT", "System Reset");
+  LOG_INFO_TAG("BOOT", "Blink done, entering kernel...");
 
   /* Do not init SDMMC here: it can block if no card is present.
    * MSC will lazy-init SDMMC on first access.
@@ -132,17 +138,33 @@ int main(void)
 
 #if defined(USBX_STANDALONE_BRINGUP)
   /* USBX standalone bring-up (no ThreadX). */
+  /* Initialize Logger first (buffers etc) */
+  Logger_Init();
+  
   (void)MX_USBX_Device_Standalone_Init();
   MX_USB_PCD_Init();
 
-  /* Set Rx and Tx FIFO / PMA map (matches WeAct baseline + our CDC endpoints). */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x14);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x54);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0x94);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0xD4);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x114);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x154);
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x194);
+  /* Configure PMA (Packet Memory Area) for endpoints.
+   * STM32H5 USB has 2KB PMA. BDT (Buffer Descriptor Table) uses the first 
+   * 8 entries × 8 bytes = 64 bytes (0x00-0x3F).
+   * Endpoint buffers must start at 0x40 or later.
+   *
+   * Layout (64-byte buffers each):
+   * 0x040: EP0 OUT (64 bytes)
+   * 0x080: EP0 IN  (64 bytes)
+   * 0x0C0: MSC OUT (EP1 OUT) (64 bytes)
+   * 0x100: MSC IN  (EP1 IN)  (64 bytes)
+   * 0x140: CDC DATA OUT (EP3 OUT) (64 bytes)
+   * 0x180: CDC DATA IN  (EP3 IN)  (64 bytes)
+   * 0x1C0: CDC CMD  IN  (EP2 IN)  (8 bytes, but allocate 64 for alignment)
+   */
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x40);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x80);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0xC0);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0x100);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x140);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x180);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x1C0);
 
   ux_dcd_stm32_initialize((ULONG)USB_DRD_FS, (ULONG)&hpcd_USB_DRD_FS);
   HAL_PCD_Start(&hpcd_USB_DRD_FS);
@@ -165,6 +187,7 @@ int main(void)
 #if defined(USBX_STANDALONE_BRINGUP)
     /* Standalone USBX needs periodic polling. */
     ux_system_tasks_run();
+    Logger_Run();
     HAL_Delay(1U);
 #endif
   }

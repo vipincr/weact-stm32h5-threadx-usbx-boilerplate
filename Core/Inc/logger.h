@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include "tx_api.h"
+#include "ux_api.h"
+#include "ux_device_class_cdc_acm.h"
 
 /* Log level definitions */
 #define LOG_LEVEL_NONE  0
@@ -18,7 +20,7 @@
 #define LOG_LEVEL_INFO  3
 #define LOG_LEVEL_DEBUG 4
 
-/* Log level configuration - default to DEBUG for development */
+/* Log level configuration */
 #ifndef LOG_LEVEL
     #define LOG_LEVEL LOG_LEVEL_DEBUG
 #endif
@@ -27,10 +29,17 @@
 
 /* Color codes for terminal output */
 #define LOG_COLOR_RESET  "\033[0m"
-#define LOG_COLOR_DEBUG  "\033[0;36m"  /* Cyan */
-#define LOG_COLOR_INFO   "\033[0;32m"  /* Green */
-#define LOG_COLOR_WARN   "\033[0;33m"  /* Yellow */
-#define LOG_COLOR_ERROR  "\033[0;31m"  /* Red */
+#define LOG_COLOR_DEBUG  "\033[0;36m[DEBUG]\033[0m"
+#define LOG_COLOR_INFO   "\033[0;32m[INFO]\033[0m"
+#define LOG_COLOR_WARN   "\033[0;33m[WARN]\033[0m"
+#define LOG_COLOR_ERROR  "\033[0;31m[ERROR]\033[0m"
+
+/* Public function declarations */
+void Logger_Init(void);
+void Logger_Log(int level, const char *message);
+void Logger_SetCdcInstance(UX_SLAVE_CLASS_CDC_ACM *instance);
+int Logger_IsReady(void);
+void Logger_Run(void);
 
 /* Simple logging macros */
 #define LOG_DEBUG(message) Logger_Log(LOG_LEVEL_DEBUG, message)
@@ -73,17 +82,6 @@
 
 /* Function tracing macros */
 #define LOG_FUNCTION_ENTRY_TAG(tag) LOG_DEBUG_TAG(tag, "Entering %s", __func__)
-#define LOG_FUNCTION_EXIT_TAG(tag)  LOG_DEBUG_TAG(tag, "Exiting %s", __func__)
-
-/* Forward declaration for USBX CDC ACM type */
-struct UX_SLAVE_CLASS_CDC_ACM_STRUCT;
-
-/* Public function declarations */
-void Logger_Init(void);
-UINT Logger_ThreadCreate(VOID *memory_ptr);
-void Logger_Log(int level, const char *message);
-void Logger_Write(const char *data, uint32_t length);
-int  Logger_IsReady(void);
-void Logger_SetCdcInstance(struct UX_SLAVE_CLASS_CDC_ACM_STRUCT *instance);
+#define LOG_FUNCTION_EXIT_TAG(tag) LOG_DEBUG_TAG(tag, "Exiting %s", __func__)
 
 #endif /* LOGGER_H */

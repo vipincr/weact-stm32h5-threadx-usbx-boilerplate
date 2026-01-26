@@ -39,3 +39,6 @@
 - For USB composite updates, ensure both descriptor and class registration changes are made.
 - For MSC, implement `USBD_STORAGE_*` callbacks to access the SD card and perform cache maintenance when DMA is used.
 - Ensure required peripherals are initialized **before** USBX device stack starts.
+
+## Verification
+- **ALWAYS build after every code change.** Check for compilation errors using `./builder.sh build` and fix them before responding.

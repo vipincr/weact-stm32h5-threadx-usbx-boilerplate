@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "led_status.h"
+#include "logger.h"
 
 #include "main.h"
 
@@ -62,10 +63,10 @@
 UINT App_ThreadX_Init(VOID *memory_ptr)
 {
   UINT ret = TX_SUCCESS;
-  /* USER CODE BEGIN App_ThreadX_MEM_POOL */
-
+  (void)memory_ptr;
   /* USER CODE END App_ThreadX_MEM_POOL */
   /* USER CODE BEGIN App_ThreadX_Init */
+  Logger_Init();
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

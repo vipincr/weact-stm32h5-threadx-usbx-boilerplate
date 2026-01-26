@@ -154,7 +154,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   cdc_acm_parameter.ux_slave_class_cdc_acm_parameter_change    = USBD_CDC_ACM_ParameterChange;
 
   /* USER CODE BEGIN CDC_ACM_PARAMETER */
-
+  /* Keep parameters standard. Logger hook is done via callback implementation below. */
   /* USER CODE END CDC_ACM_PARAMETER */
 
   /* Get cdc acm configuration number */
@@ -257,8 +257,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
 
   /* USER CODE BEGIN MX_USBX_Device_Init1 */
   /* Logger runs in its own low-priority thread; CDC activate will only enable it when DTR is set. */
-  Logger_Init();
-  (void)Logger_ThreadCreate(memory_ptr);
+  /* Logger_Init() is called in App_ThreadX_Init */
   /* USER CODE END MX_USBX_Device_Init1 */
 
   return ret;
@@ -285,24 +284,35 @@ static VOID app_ux_device_thread_entry(ULONG thread_input)
   MX_USB_PCD_Init();
 
   /* Configure PMA (Packet Memory Area) for endpoints.
-   * Layout matches the known-good WeAct USBX examples (MSC), extended for CDC.
+   * Total 8 endpoints (0-7). BDT (Buffer Descriptor Table) takes 8 * 8 = 64 bytes (0x00 - 0x3F).
+   * Buffers must start after 0x40 to avoid overwriting BDT.
+   *
+   * Layout:
+   * EP0 OUT: 0x40 (64 bytes)
+   * EP0 IN : 0x80 (64 bytes)
+   * MSC OUT: 0xC0 (64 bytes)
+   * MSC IN : 0x100 (64 bytes)
+   * CDC OUT: 0x140 (64 bytes)
+   * CDC IN : 0x180 (64 bytes)
+   * CDC CMD: 0x1C0 (64 bytes)
    */
+  
   /* EP0 OUT */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x14);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x00, PCD_SNG_BUF, 0x40);
   /* EP0 IN */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x54);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x80, PCD_SNG_BUF, 0x80);
 
   /* MSC EP OUT (0x01) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0x94);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x01, PCD_SNG_BUF, 0xC0);
   /* MSC EP IN (0x81) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0xD4);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x81, PCD_SNG_BUF, 0x100);
 
   /* CDC DATA EP OUT (0x03) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x114);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x03, PCD_SNG_BUF, 0x140);
   /* CDC DATA EP IN (0x83) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x154);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x83, PCD_SNG_BUF, 0x180);
   /* CDC CMD EP IN (0x82) */
-  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x194);
+  HAL_PCDEx_PMAConfig(&hpcd_USB_DRD_FS, 0x82, PCD_SNG_BUF, 0x1C0);
 
   /* Initialize the device controller driver */
   _ux_dcd_stm32_initialize((ULONG)USB_DRD_FS, (ULONG)&hpcd_USB_DRD_FS);
@@ -355,7 +365,8 @@ UINT MX_USBX_Device_Standalone_Init(VOID)
   UCHAR *language_id_framework;
 
   /* USBX memory pool for standalone mode. */
-  static UCHAR ux_standalone_memory[USBX_DEVICE_MEMORY_STACK_SIZE];
+  /* Ensure alignment for USBX structures */
+  static UCHAR ux_standalone_memory[USBX_DEVICE_MEMORY_STACK_SIZE] __attribute__((aligned(32)));
 
   ret = ux_system_initialize(ux_standalone_memory,
                              (ULONG)sizeof(ux_standalone_memory),
@@ -448,3 +459,31 @@ UINT MX_USBX_Device_Standalone_Init(VOID)
 }
 
 /* USER CODE END 1 */
+
+/**
+  * @brief  USBD_CDC_ACM_Activate
+  *         This function is called when insertion of a CDC ACM device.
+  * @param  cdc_acm_instance: Pointer to the cdc acm class instance.
+  * @retval none
+  */
+/* Implemented in ux_device_cdc_acm.c to handle DTR logic */
+/*
+VOID USBD_CDC_ACM_Activate(VOID *cdc_acm_instance)
+{
+  Logger_SetCdcInstance((UX_SLAVE_CLASS_CDC_ACM*)cdc_acm_instance);
+  return;
+}
+
+VOID USBD_CDC_ACM_Deactivate(VOID *cdc_acm_instance)
+{
+  UX_PARAMETER_NOT_USED(cdc_acm_instance);
+  Logger_SetCdcInstance(UX_NULL);
+  return;
+}
+
+VOID USBD_CDC_ACM_ParameterChange(VOID *cdc_acm_instance)
+{
+  UX_PARAMETER_NOT_USED(cdc_acm_instance);
+  return;
+}
+*/
