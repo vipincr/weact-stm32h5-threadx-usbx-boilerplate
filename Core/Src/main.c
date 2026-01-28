@@ -36,12 +36,6 @@
 #include "app_usbx_device.h"
 #include "ux_device_cdc_acm.h"
 #include "ux_api.h"
-
-/* MSC diagnostic counters (from ux_device_msc.c) */
-extern volatile uint32_t g_msc_status_count;
-extern volatile uint32_t g_msc_notification_count;
-extern volatile uint32_t g_msc_read_count;
-extern volatile uint32_t g_msc_write_count;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -177,8 +171,7 @@ int main(void)
   }
   
   /* Log boot messages - these will be buffered until CDC connects */
-  LOG_INFO_TAG("BOOT", "System Reset");
-  LOG_INFO_TAG("BOOT", "Reboot #%lu", g_reboot_count);
+  LOG_INFO_TAG("BOOT", "System Reset #%lu", g_reboot_count);
 
   /* Always enable MSC for hot-plug support.
    * SD card presence is checked dynamically in MSC callbacks.
@@ -243,19 +236,12 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  static uint32_t uptime_seconds = 0U;
-  static uint32_t last_tick = 0U;
-  static uint32_t loop_count = 0U;
-  
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
 #if defined(USBX_STANDALONE_BRINGUP)
-    /* ALWAYS feed hardware watchdog - it's enabled in option bytes.
-     * This is unconditional because the detection may not work before FLASH is ready.
-     */
     /* Standalone USBX needs periodic polling. */
     ux_system_tasks_run();
     
@@ -266,21 +252,6 @@ int main(void)
     USBD_CDC_ACM_PollLineState();
     
     Logger_Run();
-    
-    /* Uptime logging every 10 seconds */
-    loop_count++;
-    uint32_t now = HAL_GetTick();
-    if ((now - last_tick) >= 10000U) {
-      uptime_seconds += 10U;
-      last_tick = now;
-      LOG_INFO_TAG("DBG", "Uptime: %lus, loops: %lu", uptime_seconds, loop_count);
-      LOG_INFO_TAG("MSC", "status=%lu notify=%lu read=%lu write=%lu",
-                   (unsigned long)g_msc_status_count,
-                   (unsigned long)g_msc_notification_count,
-                   (unsigned long)g_msc_read_count,
-                   (unsigned long)g_msc_write_count);
-      loop_count = 0U;
-    }
     
     HAL_Delay(1U);
 #endif

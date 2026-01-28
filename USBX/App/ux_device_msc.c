@@ -115,14 +115,7 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Activate */
   UX_PARAMETER_NOT_USED(storage_instance);
-  if (SDMMC1_IsInitialized())
-  {
-    LOG_INFO_TAG("MSC", "MSC activated - SD ready");
-  }
-  else
-  {
-    LOG_INFO_TAG("MSC", "MSC activated - SD not ready");
-  }
+  LOG_INFO_TAG("MSC", "Activated (SD %s)", SDMMC1_IsInitialized() ? "ready" : "not ready");
   /* USER CODE END USBD_STORAGE_Activate */
 
   return;
