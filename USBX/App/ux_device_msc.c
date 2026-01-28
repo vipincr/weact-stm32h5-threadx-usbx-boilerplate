@@ -46,6 +46,25 @@
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 
+/* Diagnostic counters for MSC callbacks */
+volatile uint32_t g_msc_status_count = 0U;
+volatile uint32_t g_msc_notification_count = 0U;
+volatile uint32_t g_msc_read_count = 0U;
+volatile uint32_t g_msc_write_count = 0U;
+
+/* GET EVENT STATUS NOTIFICATION response buffer for removable media.
+ * This tells macOS/Windows that media status hasn't changed.
+ * Format: Event Header (4 bytes) + Media Event Descriptor (4 bytes)
+ */
+static UCHAR msc_notification_response[8] = {
+  0x00, 0x02,  /* Event Descriptor Length (2 bytes after this) */
+  0x04,        /* Notification Class (0x04 = Media) */
+  0x00,        /* Supported Event Classes */
+  0x02,        /* Media Event Code: 0x02 = Media Absent (no media present) */
+  0x02,        /* Media Status: 0x02 = Media absent, door closed */
+  0x00, 0x00   /* Start Slot, End Slot */
+};
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -150,10 +169,20 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_status);
 
+  g_msc_read_count++;
+
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    return UX_ERROR;
+    /* No SD card - set sense code but return SUCCESS.
+     * Returning UX_ERROR causes aggressive retries from host.
+     * The sense code tells host "Not Ready, Medium Not Present"
+     */
+    if (media_status != UX_NULL)
+    {
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    return UX_SUCCESS;  /* Command handled, error is in sense code */
   }
 
   /* Read blocks from SD card */
@@ -203,7 +232,14 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    return UX_ERROR;
+    /* No SD card - set sense code but return SUCCESS.
+     * Returning UX_ERROR causes aggressive retries from host.
+     */
+    if (media_status != UX_NULL)
+    {
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    return UX_SUCCESS;  /* Command handled, error is in sense code */
   }
 
   /* Write blocks to SD card */
@@ -275,13 +311,16 @@ UINT USBD_STORAGE_Status(VOID *storage_instance, ULONG lun, ULONG media_id,
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_id);
   
+  g_msc_status_count++;
+  
   /* Report actual SD card status to the host */
   if (ensure_sd_initialized() != 0)
   {
     /* No SD card present - report media not present */
     if (media_status != UX_NULL)
     {
-      *media_status = UX_SLAVE_CLASS_STORAGE_SENSE_KEY_NOT_READY;
+      /* Not Ready (0x02), Medium Not Present (0x3A), No Qualifier (0x00) */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
     /* Still return SUCCESS - the error is in media_status */
   }
@@ -318,9 +357,37 @@ UINT USBD_STORAGE_Notification(VOID *storage_instance, ULONG lun, ULONG media_id
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_id);
-  UX_PARAMETER_NOT_USED(notification_class);
-  UX_PARAMETER_NOT_USED(media_notification);
-  UX_PARAMETER_NOT_USED(media_notification_length);
+  
+  g_msc_notification_count++;
+  
+  /* Handle GET_EVENT_STATUS_NOTIFICATION - critical for macOS compatibility.
+   * Without this, macOS will reset the USB device after repeated polling failures.
+   */
+  if (notification_class == 0x10U) /* 0x10 = Media class notification */
+  {
+    /* Update media status in response buffer based on SD card presence */
+    if (ensure_sd_initialized() == 0)
+    {
+      /* Media present */
+      msc_notification_response[4] = 0x00U; /* Media Event: No Change */
+      msc_notification_response[5] = 0x01U; /* Media Status: Present, door closed */
+    }
+    else
+    {
+      /* Media absent */
+      msc_notification_response[4] = 0x02U; /* Media Event: Media Absent */
+      msc_notification_response[5] = 0x02U; /* Media Status: Absent, door closed */
+    }
+    
+    *media_notification = msc_notification_response;
+    *media_notification_length = sizeof(msc_notification_response);
+  }
+  else
+  {
+    /* Unknown notification class - return empty response */
+    *media_notification = UX_NULL;
+    *media_notification_length = 0U;
+  }
   /* USER CODE END USBD_STORAGE_Notification */
 
   return status;

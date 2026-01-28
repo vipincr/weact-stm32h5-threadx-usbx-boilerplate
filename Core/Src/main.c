@@ -36,6 +36,12 @@
 #include "app_usbx_device.h"
 #include "ux_device_cdc_acm.h"
 #include "ux_api.h"
+
+/* MSC diagnostic counters (from ux_device_msc.c) */
+extern volatile uint32_t g_msc_status_count;
+extern volatile uint32_t g_msc_notification_count;
+extern volatile uint32_t g_msc_read_count;
+extern volatile uint32_t g_msc_write_count;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -253,6 +259,11 @@ int main(void)
       uptime_seconds += 10U;
       last_tick = now;
       LOG_INFO_TAG("DBG", "Uptime: %lus, loops: %lu", uptime_seconds, loop_count);
+      LOG_INFO_TAG("MSC", "status=%lu notify=%lu read=%lu write=%lu",
+                   (unsigned long)g_msc_status_count,
+                   (unsigned long)g_msc_notification_count,
+                   (unsigned long)g_msc_read_count,
+                   (unsigned long)g_msc_write_count);
       loop_count = 0U;
     }
     
