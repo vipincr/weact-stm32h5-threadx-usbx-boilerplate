@@ -120,7 +120,7 @@ VOID USBD_CDC_ACM_Activate(VOID *cdc_acm_instance)
                                 &line_coding);
 
 #ifndef UX_STANDALONE
-  /* Set write timeout to avoid indefinte blocking if host stops reading */
+  /* Set write timeout to avoid indefinite blocking if host stops reading */
   /* Timeout: 100ms (assuming 1ms tick) */
   ULONG write_timeout = 100;
   ux_device_class_cdc_acm_ioctl(cdc_acm_instance_ptr,
@@ -128,12 +128,13 @@ VOID USBD_CDC_ACM_Activate(VOID *cdc_acm_instance)
                                 &write_timeout);
 #endif
 
-  /* Initialize logger with CDC instance */
+  /* Set CDC instance for logger - writes can happen after enumeration.
+   * The write timeout handles cases where host hasn't opened the port yet.
+   */
   Logger_SetCdcInstance(cdc_acm_instance_ptr);
 
-
-    /* At activation time, the host may not have opened the port yet. */
-    cdc_update_led_from_line_state(cdc_acm_instance_ptr);
+  /* Check current line state for LED/logging purposes */
+  cdc_update_led_from_line_state(cdc_acm_instance_ptr);
   /* USER CODE END USBD_CDC_ACM_Activate */
 
   return;

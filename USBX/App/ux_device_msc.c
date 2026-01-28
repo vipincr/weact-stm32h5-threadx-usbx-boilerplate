@@ -161,21 +161,19 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    /* No SD card - set sense code.
-     * IMPORTANT: Return UX_STATE_ERROR (2) so USBX reports error to host with sense code.
-     */
+    /* No SD card - set sense code. */
     if (media_status != UX_NULL)
     {
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    return UX_STATE_ERROR;  /* Disk error with sense code */
+    return UX_ERROR;
   }
 
   /* Read blocks from SD card */
   if (HAL_SD_ReadBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
     LOG_ERROR_TAG("MSC", "Read failed at LBA %lu", (unsigned long)lba);
-    return UX_STATE_ERROR;
+    return UX_ERROR;
   }
 
   /* Wait until transfer is complete - WITH TIMEOUT */
@@ -185,14 +183,14 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
     {
       LOG_ERROR_TAG("MSC", "Read wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_STATE_ERROR;
+      return UX_ERROR;
     }
   }
 
-  /* USBX standalone mode expects UX_STATE_NEXT (4) for success, not UX_SUCCESS (0) */
+  /* ThreadX (RTOS) mode expects UX_SUCCESS for success */
   /* USER CODE END USBD_STORAGE_Read */
 
-  return UX_STATE_NEXT;
+  return UX_SUCCESS;
 }
 
 /**
@@ -220,21 +218,19 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    /* No SD card - set sense code.
-     * IMPORTANT: Return UX_STATE_ERROR (2) so USBX reports error to host with sense code.
-     */
+    /* No SD card - set sense code. */
     if (media_status != UX_NULL)
     {
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    return UX_STATE_ERROR;  /* Disk error with sense code */
+    return UX_ERROR;
   }
 
   /* Write blocks to SD card */
   if (HAL_SD_WriteBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
     LOG_ERROR_TAG("MSC", "Write failed at LBA %lu", (unsigned long)lba);
-    return UX_STATE_ERROR;
+    return UX_ERROR;
   }
 
   /* Wait until transfer is complete - WITH TIMEOUT */
@@ -244,14 +240,14 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
     {
       LOG_ERROR_TAG("MSC", "Write wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_STATE_ERROR;
+      return UX_ERROR;
     }
   }
 
-  /* USBX standalone mode expects UX_STATE_NEXT (4) for success, not UX_SUCCESS (0) */
+  /* ThreadX (RTOS) mode expects UX_SUCCESS for success */
   /* USER CODE END USBD_STORAGE_Write */
 
-  return UX_STATE_NEXT;
+  return UX_SUCCESS;
 }
 
 /**
@@ -275,10 +271,10 @@ UINT USBD_STORAGE_Flush(VOID *storage_instance, ULONG lun, ULONG number_blocks,
   UX_PARAMETER_NOT_USED(lba);
   UX_PARAMETER_NOT_USED(media_status);
   
-  /* USBX standalone mode expects UX_STATE_NEXT for success */
+  /* ThreadX (RTOS) mode expects UX_SUCCESS for success */
   /* USER CODE END USBD_STORAGE_Flush */
 
-  return UX_STATE_NEXT;
+  return UX_SUCCESS;
 }
 
 /**

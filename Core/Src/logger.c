@@ -141,10 +141,12 @@ void Logger_SetCdcInstance(UX_SLAVE_CLASS_CDC_ACM *instance)
   {
     logger_dtr_ready = 1U;
     /* Signal thread to flush any pending data */
+#if !defined(UX_STANDALONE)
     if (logger_initialized)
     {
         tx_semaphore_put(&logger_sem);
     }
+#endif
   }
   else
   {
@@ -273,16 +275,16 @@ static VOID logger_thread_entry(ULONG thread_input)
 
   for (;;)
   {
-    /* Wait for data */
+    /* Wait for data signal */
     tx_semaphore_get(&logger_sem, TX_WAIT_FOREVER);
 
-    /* Process Buffer */
+    /* Process buffer - flush all pending data */
     while (1)
     {
-       /* Check connection */
+       /* Check if CDC is connected */
        if (cdc_acm_instance == UX_NULL)
        {
-           /* Not connected, stop flushing but keep data in buffer (or drop if full? Ring buffer handles full naturally) */
+           /* Not connected, keep data in buffer for when we reconnect */
            break;
        }
 
