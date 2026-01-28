@@ -43,7 +43,16 @@ void MX_SDMMC1_SD_Init(void);
 /* USER CODE BEGIN Prototypes */
 
 int SDMMC1_SafeInit(void);
+int SDMMC1_SafeInitQuiet(void);     /* Same as SafeInit but no logging */
 int SDMMC1_IsInitialized(void);
+int SDMMC1_QuickDetect(void);       /* Quick check if SD card is present */
+int SDMMC1_IsCardPresent(void);     /* Check if initialized card is still present */
+void SDMMC1_ResetState(void);       /* Reset state for hot-plug re-init */
+void SDMMC1_PollCardPresence(void); /* Periodic check for card insert/remove */
+
+/* MSC enable control - set based on SD card presence at boot */
+void USBD_MSC_SetEnabled(int enabled);
+int  USBD_MSC_IsEnabled(void);
 
 /* USER CODE END Prototypes */
 

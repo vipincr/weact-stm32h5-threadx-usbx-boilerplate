@@ -151,9 +151,101 @@ void HAL_SD_MspDeInit(SD_HandleTypeDef* sdHandle)
 /* USER CODE BEGIN 1 */
 
 static uint8_t sd_initialized = 0U;
-static uint8_t sd_init_failed = 0U;
+static uint8_t msc_enabled = 0U;  /* Whether MSC class should be active */
+static uint32_t last_card_check_tick = 0U;
 
-int SDMMC1_SafeInit(void)
+/* MSC enable control - called before USB init based on SD detection */
+void USBD_MSC_SetEnabled(int enabled)
+{
+  msc_enabled = (enabled != 0) ? 1U : 0U;
+}
+
+int USBD_MSC_IsEnabled(void)
+{
+  return (msc_enabled != 0U) ? 1 : 0;
+}
+
+/**
+  * @brief  Reset SD state to allow re-initialization.
+  *         Call this when card is removed to allow detecting a new card.
+  */
+void SDMMC1_ResetState(void)
+{
+  if (sd_initialized != 0U)
+  {
+    LOG_INFO_TAG("SD", "SD card removed - resetting state");
+    HAL_SD_DeInit(&hsd1);
+  }
+  sd_initialized = 0U;
+}
+
+/**
+  * @brief  Check if SD card is currently present and accessible.
+  *         This is a quick check that doesn't do full init.
+  * @retval 1 if card is present and ready, 0 otherwise
+  */
+int SDMMC1_IsCardPresent(void)
+{
+  if (sd_initialized == 0U)
+  {
+    return 0;
+  }
+  
+  /* Check if card is still responding */
+  HAL_SD_CardStateTypeDef state = HAL_SD_GetCardState(&hsd1);
+  if (state == HAL_SD_CARD_ERROR)
+  {
+    /* Card was removed or has error - reset state */
+    SDMMC1_ResetState();
+    return 0;
+  }
+  
+  return 1;
+}
+
+/**
+  * @brief  Periodic check for SD card insertion/removal.
+  *         Call this from main loop to support hot-plug.
+  *         Rate-limited to avoid excessive polling.
+  */
+void SDMMC1_PollCardPresence(void)
+{
+  /* Hot-plug SD card detection is currently disabled.
+   * HAL_SD_Init() is a blocking call that can take 100s of ms,
+   * which causes USB to stall and host disconnects.
+   * 
+   * For now, SD card must be present at boot.
+   * TODO: Implement non-blocking SD detection or use a separate task.
+   */
+  (void)0;  /* Suppress unused warning */
+}
+
+/**
+  * @brief  Quick SD card detection without full init.
+  *         Tries to init SD just enough to detect presence,
+  *         then sets the init state for later use.
+  * @retval 1 if SD card is present, 0 otherwise
+  */
+int SDMMC1_QuickDetect(void)
+{
+  /* If already initialized, we know card is present */
+  if (sd_initialized != 0U)
+  {
+    return 1;
+  }
+  
+  /* Try a quick init - if it works, card is present */
+  /* Note: This will fully init if successful */
+  if (SDMMC1_SafeInit() == 0)
+  {
+    return 1;
+  }
+  
+  return 0;
+}
+
+/* Internal init function with optional logging */
+static int SDMMC1_DoInit(int quiet)
 {
   /* Already initialized successfully */
   if (sd_initialized != 0U)
@@ -161,13 +253,10 @@ int SDMMC1_SafeInit(void)
     return 0;
   }
 
-  /* Don't retry if already failed (avoid repeated blocking attempts) */
-  if (sd_init_failed != 0U)
+  if (!quiet)
   {
-    return -1;
+    LOG_INFO_TAG("SD", "Initializing SD card...");
   }
-
-  LOG_INFO_TAG("SD", "Initializing SD card...");
 
   /* IMPORTANT: SD cards MUST start in 1-bit mode, then switch to 4-bit */
   hsd1.Instance = SDMMC1;
@@ -179,8 +268,11 @@ int SDMMC1_SafeInit(void)
 
   if (HAL_SD_Init(&hsd1) != HAL_OK)
   {
-    LOG_ERROR_TAG("SD", "HAL_SD_Init failed (no card?)");
-    sd_init_failed = 1U;
+    if (!quiet)
+    {
+      LOG_ERROR_TAG("SD", "HAL_SD_Init failed (no card?)");
+    }
+    /* Don't set sd_init_failed - allow retry for hot-plug */
     return -1;
   }
 
@@ -209,6 +301,16 @@ int SDMMC1_SafeInit(void)
   sd_initialized = 1U;
   LOG_INFO_TAG("SD", "SD card initialized successfully");
   return 0;
+}
+
+int SDMMC1_SafeInit(void)
+{
+  return SDMMC1_DoInit(0);  /* With logging */
+}
+
+int SDMMC1_SafeInitQuiet(void)
+{
+  return SDMMC1_DoInit(1);  /* Without logging */
 }
 
 int SDMMC1_IsInitialized(void)

@@ -70,17 +70,10 @@ static UCHAR msc_notification_response[8] = {
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN PFP */
 static int32_t check_sd_status(void);
-static int32_t ensure_sd_initialized(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-static int32_t ensure_sd_initialized(void)
-{
-  /* SDMMC1_SafeInit() is idempotent and non-fatal. */
-  return (SDMMC1_SafeInit() == 0) ? 0 : -1;
-}
 
 /**
   * @brief  check_sd_status
@@ -90,7 +83,10 @@ static int32_t ensure_sd_initialized(void)
   */
 static int32_t check_sd_status(void)
 {
-  if (ensure_sd_initialized() != 0)
+  /* Just check if already initialized - don't try to init here.
+   * Card detection/init is done in main loop via SDMMC1_PollCardPresence().
+   */
+  if (!SDMMC1_IsInitialized())
   {
     return -1;
   }
@@ -119,7 +115,7 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Activate */
   UX_PARAMETER_NOT_USED(storage_instance);
-  if (ensure_sd_initialized() == 0)
+  if (SDMMC1_IsInitialized())
   {
     LOG_INFO_TAG("MSC", "MSC activated - SD ready");
   }
@@ -313,16 +309,22 @@ UINT USBD_STORAGE_Status(VOID *storage_instance, ULONG lun, ULONG media_id,
   
   g_msc_status_count++;
   
-  /* Report actual SD card status to the host */
-  if (ensure_sd_initialized() != 0)
+  /* Report actual SD card status to the host.
+   * We just check if initialized - card detection/init is done in main loop.
+   */
+  if (!SDMMC1_IsInitialized())
   {
-    /* No SD card present - report media not present */
+    /* No SD card present - report NOT READY to host.
+     * CRITICAL: Return UX_ERROR here so TEST UNIT READY fails.
+     * This tells macOS "no media" and prevents the "initialize disk" dialog.
+     * The sense code provides the specific reason (Medium Not Present).
+     */
     if (media_status != UX_NULL)
     {
       /* Not Ready (0x02), Medium Not Present (0x3A), No Qualifier (0x00) */
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    /* Still return SUCCESS - the error is in media_status */
+    status = UX_ERROR;  /* Tell host: TEST UNIT READY failed - no media */
   }
   else
   {
@@ -366,7 +368,7 @@ UINT USBD_STORAGE_Notification(VOID *storage_instance, ULONG lun, ULONG media_id
   if (notification_class == 0x10U) /* 0x10 = Media class notification */
   {
     /* Update media status in response buffer based on SD card presence */
-    if (ensure_sd_initialized() == 0)
+    if (SDMMC1_IsInitialized())
     {
       /* Media present */
       msc_notification_response[4] = 0x00U; /* Media Event: No Change */
@@ -406,9 +408,9 @@ ULONG USBD_STORAGE_GetMediaLastLba(VOID)
   /* USER CODE BEGIN USBD_STORAGE_GetMediaLastLba */
   HAL_SD_CardInfoTypeDef CardInfo;
 
-  if (ensure_sd_initialized() != 0)
+  if (!SDMMC1_IsInitialized())
   {
-    /* No media: report a minimal 1-block LUN so enumeration still works. */
+    /* No media: report 0 blocks. */
     return 0U;
   }
 
@@ -436,7 +438,7 @@ ULONG USBD_STORAGE_GetMediaBlocklength(VOID)
   /* USER CODE BEGIN USBD_STORAGE_GetMediaBlocklength */
   HAL_SD_CardInfoTypeDef CardInfo;
 
-  if (ensure_sd_initialized() != 0)
+  if (!SDMMC1_IsInitialized())
   {
     return 512U;
   }

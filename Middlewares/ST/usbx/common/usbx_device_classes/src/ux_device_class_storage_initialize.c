@@ -31,8 +31,8 @@
 
 /* Define the Slave Storage Class Inquiry data : DO NOT CHANGE THE LENGTH OF THESE ITEMS */
 
-UCHAR _ux_system_slave_class_storage_vendor_id[] =                          "AzureRTO";
-UCHAR _ux_system_slave_class_storage_product_id[] =                         "USBX storage dev";
+UCHAR _ux_system_slave_class_storage_vendor_id[] =                          "GRAMINI";
+UCHAR _ux_system_slave_class_storage_product_id[] =                         "USBX Storage";
 UCHAR _ux_system_slave_class_storage_product_rev[] =                        "2000";
 UCHAR _ux_system_slave_class_storage_product_serial[] =                     "12345678901234567890";
 

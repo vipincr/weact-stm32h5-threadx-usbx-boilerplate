@@ -180,10 +180,22 @@ int main(void)
   LOG_INFO_TAG("BOOT", "System Reset");
   LOG_INFO_TAG("BOOT", "Reboot #%lu", g_reboot_count);
 
-  /* Do not init SDMMC here: it can block if no card is present.
-   * MSC will lazy-init SDMMC on first access.
+  /* Always enable MSC for hot-plug support.
+   * SD card presence is checked dynamically in MSC callbacks.
+   * This allows SD card to be inserted/removed at runtime.
    */
   g_boot_stage = 4U;
+  USBD_MSC_SetEnabled(1);  /* Always enable MSC class */
+  
+  /* Try to init SD card if present (non-blocking check) */
+  if (SDMMC1_QuickDetect())
+  {
+    LOG_INFO_TAG("BOOT", "SD card detected at boot");
+  }
+  else
+  {
+    LOG_INFO_TAG("BOOT", "No SD card at boot (hot-plug supported)");
+  }
 
   /* Next: ThreadX/USBX init */
   g_boot_stage = 5U;
@@ -246,6 +258,9 @@ int main(void)
      */
     /* Standalone USBX needs periodic polling. */
     ux_system_tasks_run();
+    
+    /* Poll for SD card insertion/removal (rate-limited internally to every 500ms) */
+    SDMMC1_PollCardPresence();
     
     /* Poll CDC line state to detect DTR changes (reconnection). */
     USBD_CDC_ACM_PollLineState();

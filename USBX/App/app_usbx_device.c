@@ -26,6 +26,7 @@
 #include "usb.h"
 #include "logger.h"
 #include "led_status.h"
+#include "sdmmc.h"  /* For USBD_MSC_IsEnabled() */
 
 #if defined(USBX_STANDALONE_BRINGUP)
 #include "stm32h5xx_hal.h"
@@ -176,6 +177,9 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
   }
 
 #if USBD_MSC_CLASS_ACTIVATED == 1U
+  /* Only register MSC if SD card was detected at boot */
+  if (USBD_MSC_IsEnabled())
+  {
   /* Initialize the storage class parameters for the device */
   storage_parameter.ux_slave_class_storage_instance_activate   = USBD_STORAGE_Activate;
   storage_parameter.ux_slave_class_storage_instance_deactivate = USBD_STORAGE_Deactivate;
@@ -235,6 +239,7 @@ UINT MX_USBX_Device_Init(VOID *memory_ptr)
     LED_FatalStageCode(5U, 1U);
     /* USER CODE END USBX_DEVICE_STORAGE_REGISTER_ERROR */
   }
+  }  /* End of USBD_MSC_IsEnabled() check */
 #endif /* USBD_MSC_CLASS_ACTIVATED */
 
   /* Allocate the stack for device application main thread */

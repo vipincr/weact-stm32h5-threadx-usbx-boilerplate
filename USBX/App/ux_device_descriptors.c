@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "sdmmc.h"  /* For USBD_MSC_IsEnabled() */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,13 +44,12 @@
 /* Private variables ---------------------------------------------------------*/
 USBD_DevClassHandleTypeDef  USBD_Device_FS, USBD_Device_HS;
 
+/* UserClassInstance is updated at runtime based on SD card presence.
+ * Start with just CDC, MSC is added only if USBD_MSC_IsEnabled() returns true.
+ */
 uint8_t UserClassInstance[USBD_MAX_CLASS_INTERFACES] = {
   CLASS_TYPE_CDC_ACM,
-#if USBD_MSC_CLASS_ACTIVATED == 1U
-  CLASS_TYPE_MSC,
-#else
-  CLASS_TYPE_NONE,
-#endif
+  CLASS_TYPE_NONE,  /* MSC slot - filled at runtime */
 };
 
 /* The generic device descriptor buffer that will be filled by builder
@@ -142,6 +141,28 @@ static void USBD_FrameWork_CDCDesc(USBD_DevClassHandleTypeDef *pdev,
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+/**
+  * @brief  Update UserClassInstance array based on SD card presence.
+  *         Must be called before USBD_Get_Device_Framework_Speed().
+  */
+void USBD_UpdateClassInstances(void)
+{
+  UserClassInstance[0] = CLASS_TYPE_CDC_ACM;  /* Always have CDC */
+  
+#if USBD_MSC_CLASS_ACTIVATED == 1U
+  if (USBD_MSC_IsEnabled())
+  {
+    UserClassInstance[1] = CLASS_TYPE_MSC;
+  }
+  else
+  {
+    UserClassInstance[1] = CLASS_TYPE_NONE;
+  }
+#else
+  UserClassInstance[1] = CLASS_TYPE_NONE;
+#endif
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -155,7 +176,8 @@ uint8_t *USBD_Get_Device_Framework_Speed(uint8_t Speed, ULONG *Length)
 {
   uint8_t *pFrameWork = NULL;
   /* USER CODE BEGIN Device_Framework0 */
-
+  /* Update UserClassInstance based on SD card presence */
+  USBD_UpdateClassInstances();
   /* USER CODE END Device_Framework0 */
 
   if (USBD_FULL_SPEED == Speed)
