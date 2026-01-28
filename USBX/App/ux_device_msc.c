@@ -158,8 +158,6 @@ VOID USBD_STORAGE_Deactivate(VOID *storage_instance)
 UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
                        ULONG number_blocks, ULONG lba, ULONG *media_status)
 {
-  UINT status = UX_SUCCESS;
-
   /* USER CODE BEGIN USBD_STORAGE_Read */
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
@@ -170,22 +168,21 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    /* No SD card - set sense code but return SUCCESS.
-     * Returning UX_ERROR causes aggressive retries from host.
-     * The sense code tells host "Not Ready, Medium Not Present"
+    /* No SD card - set sense code.
+     * IMPORTANT: Return UX_STATE_ERROR (2) so USBX reports error to host with sense code.
      */
     if (media_status != UX_NULL)
     {
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    return UX_SUCCESS;  /* Command handled, error is in sense code */
+    return UX_STATE_ERROR;  /* Disk error with sense code */
   }
 
   /* Read blocks from SD card */
   if (HAL_SD_ReadBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
     LOG_ERROR_TAG("MSC", "Read failed at LBA %lu", (unsigned long)lba);
-    return UX_ERROR;
+    return UX_STATE_ERROR;
   }
 
   /* Wait until transfer is complete - WITH TIMEOUT */
@@ -195,12 +192,14 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
     {
       LOG_ERROR_TAG("MSC", "Read wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_ERROR;
+      return UX_STATE_ERROR;
     }
   }
+
+  /* USBX standalone mode expects UX_STATE_NEXT (4) for success, not UX_SUCCESS (0) */
   /* USER CODE END USBD_STORAGE_Read */
 
-  return status;
+  return UX_STATE_NEXT;
 }
 
 /**
@@ -218,31 +217,31 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
 UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
                         ULONG number_blocks, ULONG lba, ULONG *media_status)
 {
-  UINT status = UX_SUCCESS;
-
   /* USER CODE BEGIN USBD_STORAGE_Write */
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_status);
 
+  g_msc_write_count++;
+
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
-    /* No SD card - set sense code but return SUCCESS.
-     * Returning UX_ERROR causes aggressive retries from host.
+    /* No SD card - set sense code.
+     * IMPORTANT: Return UX_STATE_ERROR (2) so USBX reports error to host with sense code.
      */
     if (media_status != UX_NULL)
     {
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    return UX_SUCCESS;  /* Command handled, error is in sense code */
+    return UX_STATE_ERROR;  /* Disk error with sense code */
   }
 
   /* Write blocks to SD card */
   if (HAL_SD_WriteBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
   {
     LOG_ERROR_TAG("MSC", "Write failed at LBA %lu", (unsigned long)lba);
-    return UX_ERROR;
+    return UX_STATE_ERROR;
   }
 
   /* Wait until transfer is complete - WITH TIMEOUT */
@@ -252,12 +251,14 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
     {
       LOG_ERROR_TAG("MSC", "Write wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_ERROR;
+      return UX_STATE_ERROR;
     }
   }
+
+  /* USBX standalone mode expects UX_STATE_NEXT (4) for success, not UX_SUCCESS (0) */
   /* USER CODE END USBD_STORAGE_Write */
 
-  return status;
+  return UX_STATE_NEXT;
 }
 
 /**
@@ -274,17 +275,17 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
 UINT USBD_STORAGE_Flush(VOID *storage_instance, ULONG lun, ULONG number_blocks,
                         ULONG lba, ULONG *media_status)
 {
-  UINT status = UX_SUCCESS;
-
   /* USER CODE BEGIN USBD_STORAGE_Flush */
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(number_blocks);
   UX_PARAMETER_NOT_USED(lba);
   UX_PARAMETER_NOT_USED(media_status);
+  
+  /* USBX standalone mode expects UX_STATE_NEXT for success */
   /* USER CODE END USBD_STORAGE_Flush */
 
-  return status;
+  return UX_STATE_NEXT;
 }
 
 /**
