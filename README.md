@@ -157,6 +157,36 @@ FS_Reader_SetChangeCallback(my_change_handler);
 
 Implementation: [Core/Src/fs_reader.c](Core/Src/fs_reader.c) and [Core/Inc/fs_reader.h](Core/Inc/fs_reader.h).
 
+### Timing utility
+
+The firmware includes timing macros for measuring function execution time:
+
+```c
+#include "time_it.h"
+
+// Measure execution time in milliseconds (1ms resolution)
+uint32_t elapsed_ms;
+TIME_IT(elapsed_ms, my_function(arg1, arg2));
+LOG_INFO_TAG("PERF", "Took %lu ms", (unsigned long)elapsed_ms);
+
+// Measure and capture return value
+uint32_t elapsed_ms;
+int result;
+TIME_IT_RET(elapsed_ms, result, my_function(arg1, arg2));
+
+// Microsecond precision using DWT cycle counter
+uint32_t elapsed_us;
+TIME_IT_US(elapsed_us, fast_operation());
+```
+
+**Available macros:**
+- `TIME_IT(elapsed_ms, func_call)` - Millisecond timing (HAL_GetTick)
+- `TIME_IT_RET(elapsed_ms, ret_val, func_call)` - Millisecond timing with return value
+- `TIME_IT_US(elapsed_us, func_call)` - Microsecond timing (DWT cycle counter)
+- `TIME_IT_US_RET(elapsed_us, ret_val, func_call)` - Microsecond timing with return value
+
+Implementation: [Core/Inc/time_it.h](Core/Inc/time_it.h).
+
 ## How the system boots
 
 1. HAL init + system clock setup.

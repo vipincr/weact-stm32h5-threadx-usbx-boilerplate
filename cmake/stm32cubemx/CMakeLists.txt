@@ -37,6 +37,7 @@ set(MX_Include_Dirs
     ${PROJ_ROOT}/Middlewares/ST/usbx/common/usbx_stm32_device_controllers
     ${PROJ_ROOT}/Middlewares/ST/usbx/common/usbx_device_classes/inc
     ${PROJ_ROOT}/Middlewares/Third_Party/FatFs/source
+    ${PROJ_ROOT}/Middlewares/Third_Party/jpeg_encoder
 )
 
 # =============================================================================
@@ -111,6 +112,13 @@ set(FatFs_Src
 )
 
 # =============================================================================
+# JPEG Encoder Library (Bayer RAW to JPEG)
+# =============================================================================
+set(JPEG_Encoder_Src
+    ${PROJ_ROOT}/Middlewares/Third_Party/jpeg_encoder/jpeg_encoder.c
+)
+
+# =============================================================================
 # Libraries
 # =============================================================================
 
@@ -139,6 +147,13 @@ add_library(FatFs OBJECT)
 target_sources(FatFs PRIVATE ${FatFs_Src})
 target_link_libraries(FatFs PUBLIC stm32cubemx)
 
+# JPEG Encoder library
+add_library(JPEG_Encoder OBJECT)
+target_sources(JPEG_Encoder PRIVATE ${JPEG_Encoder_Src})
+target_link_libraries(JPEG_Encoder PUBLIC stm32cubemx)
+# Enable fast mode (DSP optimizations) for ARM Cortex-M33
+target_compile_definitions(JPEG_Encoder PRIVATE FASTMODE=1)
+
 # =============================================================================
 # Link Configuration
 # =============================================================================
@@ -147,6 +162,8 @@ set(MX_LINK_LIBS
     USBX
     ThreadX
     FatFs
+    JPEG_Encoder
+    m
     ${TOOLCHAIN_LINK_LIBRARIES}
 )
 

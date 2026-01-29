@@ -28,6 +28,7 @@
 - Filesystem reader/monitor: [Core/Src/fs_reader.c](../Core/Src/fs_reader.c) and [Core/Inc/fs_reader.h](../Core/Inc/fs_reader.h)
 - FatFs configuration: [Core/Inc/ffconf.h](../Core/Inc/ffconf.h)
 - FatFs disk I/O: [Core/Src/sd_diskio.c](../Core/Src/sd_diskio.c)
+- Timing utility: [Core/Inc/time_it.h](../Core/Inc/time_it.h)
 
 ## Logging subsystem
 
@@ -112,6 +113,31 @@ FS_Reader_SetChangeCallback(my_handler);
 - For filesystem monitoring, use `FS_Reader_SetChangeCallback()` to register custom handlers.
 - Large structures (>1KB) should be static, not stack-allocated, to avoid ThreadX stack overflow.
 - FatFs and USB MSC can conflict - FatFs operations may fail when host is accessing SD via USB.
+
+## Timing utility
+
+The project includes timing macros in [Core/Inc/time_it.h](../Core/Inc/time_it.h) for measuring function execution time:
+
+```c
+#include "time_it.h"
+
+// Measure execution time in milliseconds
+uint32_t elapsed_ms;
+TIME_IT(elapsed_ms, my_function(arg1, arg2));
+LOG_INFO_TAG("PERF", "Took %lu ms", (unsigned long)elapsed_ms);
+
+// Measure with return value capture
+uint32_t elapsed_ms;
+int result;
+TIME_IT_RET(elapsed_ms, result, my_function(arg1, arg2));
+
+// Microsecond precision (DWT cycle counter)
+uint32_t elapsed_us;
+TIME_IT_US(elapsed_us, fast_operation());
+```
+
+- `TIME_IT` / `TIME_IT_RET`: 1ms resolution using `HAL_GetTick()`
+- `TIME_IT_US` / `TIME_IT_US_RET`: Microsecond resolution using DWT cycle counter
 
 ## Verification
 

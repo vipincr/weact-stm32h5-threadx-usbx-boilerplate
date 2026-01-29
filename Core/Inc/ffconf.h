@@ -9,9 +9,9 @@
 / Function Configurations
 /---------------------------------------------------------------------------*/
 
-#define FF_FS_READONLY	1
-/* Read-only configuration for file reading only.
-/  Set to 0 if you need to write files. */
+#define FF_FS_READONLY	0
+/* Read/write configuration for file operations.
+/  Set to 1 for read-only mode. */
 
 #define FF_FS_MINIMIZE	0
 /* Full API enabled including f_opendir, f_readdir, f_closedir */

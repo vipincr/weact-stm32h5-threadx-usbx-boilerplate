@@ -27,6 +27,7 @@
 #include "logger.h"
 #include "button_handler.h"
 #include "fs_reader.h"
+#include "jpeg_processor.h"
 #include "ux_device_class_cdc_acm.h"
 #include <stdio.h>
 #include <string.h>
@@ -91,6 +92,9 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
 
   /* Initialize filesystem reader thread (FatFs + exFAT) */
   FS_Reader_Init(UX_NULL);
+
+  /* Initialize JPEG processor (watches for .bin files and converts to JPEG) */
+  JPEG_Processor_Init();
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
