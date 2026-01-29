@@ -26,6 +26,7 @@
 #include "led_status.h"
 #include "logger.h"
 #include "button_handler.h"
+#include "fs_reader.h"
 #include "ux_device_class_cdc_acm.h"
 #include <stdio.h>
 #include <string.h>
@@ -87,6 +88,9 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
 
   /* Initialize button handler thread */
   ButtonHandler_Init(UX_NULL);
+
+  /* Initialize filesystem reader thread (FatFs + exFAT) */
+  FS_Reader_Init(UX_NULL);
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

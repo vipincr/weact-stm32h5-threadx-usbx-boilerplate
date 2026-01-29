@@ -152,7 +152,6 @@ void HAL_SD_MspDeInit(SD_HandleTypeDef* sdHandle)
 
 static uint8_t sd_initialized = 0U;
 static uint8_t msc_enabled = 0U;  /* Whether MSC class should be active */
-static uint32_t last_card_check_tick = 0U;
 
 /* MSC enable control - called before USB init based on SD detection */
 void USBD_MSC_SetEnabled(int enabled)
@@ -277,29 +276,21 @@ static int SDMMC1_DoInit(int quiet)
   }
 
   /* Now switch to 4-bit mode for better performance */
-  if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK)
-  {
-    LOG_WARN_TAG("SD", "4-bit mode failed, using 1-bit");
-    /* Continue with 1-bit mode - still functional */
-  }
-  else
-  {
-    LOG_INFO_TAG("SD", "Switched to 4-bit mode");
-  }
+  (void)HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
 
   /* Get card info for logging */
   HAL_SD_CardInfoTypeDef cardInfo;
   if (HAL_SD_GetCardInfo(&hsd1, &cardInfo) == HAL_OK)
   {
     uint32_t sizeMB = (uint32_t)((uint64_t)cardInfo.BlockNbr * cardInfo.BlockSize / 1048576ULL);
-    LOG_INFO_TAG("SD", "Card: %lu blocks x %lu bytes = %lu MB",
-                 (unsigned long)cardInfo.BlockNbr,
-                 (unsigned long)cardInfo.BlockSize,
-                 (unsigned long)sizeMB);
+    LOG_INFO_TAG("SD", "Card ready: %lu MB", (unsigned long)sizeMB);
+  }
+  else
+  {
+    LOG_INFO_TAG("SD", "Card ready");
   }
 
   sd_initialized = 1U;
-  LOG_INFO_TAG("SD", "SD card initialized successfully");
   return 0;
 }
 

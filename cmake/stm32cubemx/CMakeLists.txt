@@ -36,6 +36,7 @@ set(MX_Include_Dirs
     ${PROJ_ROOT}/Middlewares/ST/usbx/ports/generic/inc
     ${PROJ_ROOT}/Middlewares/ST/usbx/common/usbx_stm32_device_controllers
     ${PROJ_ROOT}/Middlewares/ST/usbx/common/usbx_device_classes/inc
+    ${PROJ_ROOT}/Middlewares/Third_Party/FatFs/source
 )
 
 # =============================================================================
@@ -102,6 +103,14 @@ set(ThreadX_Src
 )
 
 # =============================================================================
+# FatFs Middleware Sources (exFAT filesystem)
+# =============================================================================
+set(FatFs_Src
+    ${PROJ_ROOT}/Middlewares/Third_Party/FatFs/source/ff.c
+    ${PROJ_ROOT}/Middlewares/Third_Party/FatFs/source/ffunicode.c
+)
+
+# =============================================================================
 # Libraries
 # =============================================================================
 
@@ -125,6 +134,11 @@ add_library(ThreadX OBJECT)
 target_sources(ThreadX PRIVATE ${ThreadX_Src})
 target_link_libraries(ThreadX PUBLIC stm32cubemx)
 
+# FatFs library
+add_library(FatFs OBJECT)
+target_sources(FatFs PRIVATE ${FatFs_Src})
+target_link_libraries(FatFs PUBLIC stm32cubemx)
+
 # =============================================================================
 # Link Configuration
 # =============================================================================
@@ -132,6 +146,7 @@ set(MX_LINK_LIBS
     STM32_Drivers
     USBX
     ThreadX
+    FatFs
     ${TOOLCHAIN_LINK_LIBRARIES}
 )
 
