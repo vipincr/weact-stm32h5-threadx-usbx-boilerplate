@@ -25,6 +25,7 @@
 /* USER CODE BEGIN Includes */
 #include "led_status.h"
 #include "logger.h"
+#include "button_handler.h"
 #include "ux_device_class_cdc_acm.h"
 #include <stdio.h>
 #include <string.h>
@@ -53,6 +54,7 @@
 
 static TX_THREAD logger_flush_thread;
 static UCHAR logger_flush_thread_stack[1024];
+
 extern UX_SLAVE_CLASS_CDC_ACM *cdc_acm_instance_ptr;
 
 /* USER CODE END PV */
@@ -82,6 +84,9 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                    logger_flush_thread_entry, 0,
                    logger_flush_thread_stack, sizeof(logger_flush_thread_stack),
                    25, 25, TX_NO_TIME_SLICE, TX_AUTO_START);
+
+  /* Initialize button handler thread */
+  ButtonHandler_Init(UX_NULL);
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
