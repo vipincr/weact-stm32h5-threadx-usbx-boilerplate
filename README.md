@@ -67,6 +67,16 @@ Defined in [Core/Src/usb.c](Core/Src/usb.c).
 
 Defined in [Core/Src/sdmmc.c](Core/Src/sdmmc.c).
 
+### FatFs filesystem
+
+- FatFs R0.15 with exFAT support (`FF_FS_EXFAT = 1`).
+- Multi-partition support for GPT-formatted SD cards (`FF_MULTI_PARTITION = 1`).
+- 64-bit LBA for large drives (`FF_LBA64 = 1`).
+- ThreadX reentrant configuration (`FF_FS_REENTRANT = 1`).
+- Read-only mode (`FF_FS_READONLY = 1`) - firmware only monitors, doesn't write.
+
+Configuration in [Core/Inc/ffconf.h](Core/Inc/ffconf.h), disk I/O in [Core/Src/sd_diskio.c](Core/Src/sd_diskio.c).
+
 ## USB composite device status
 
 The device enumerates as a composite device:
@@ -114,6 +124,39 @@ Implementation: [Core/Src/led_status.c](Core/Src/led_status.c) and CDC line-stat
 - If no SD card is present, the device enumerates as CDC-only.
 - Hot-plug of SD cards is not currently supported.
 
+### Filesystem monitoring
+
+The firmware includes a FatFs-based filesystem reader with change detection:
+
+- **FatFs R0.15**: Industry-standard filesystem library with exFAT and GPT partition support.
+- **Polling-based monitoring**: Scans the SD card every 5 seconds for changes.
+- **Recursive scanning**: Monitors up to 4 directory levels deep, tracking up to 128 entries.
+- **Callback notifications**: Register a callback to receive change events.
+
+**Event types:**
+- `FS_EVENT_FILE_CREATED` - New file detected
+- `FS_EVENT_FILE_MODIFIED` - File size or timestamp changed
+- `FS_EVENT_FILE_DELETED` - File removed
+- `FS_EVENT_DIR_CREATED` - New directory detected
+- `FS_EVENT_DIR_DELETED` - Directory removed
+
+**Usage:**
+```c
+#include "fs_reader.h"
+
+void my_change_handler(FS_EventType_t event, const char *path)
+{
+    LOG_INFO_TAG("APP", "Change: %s on %s", FS_Reader_EventTypeStr(event), path);
+}
+
+// Register custom callback (default logs to CDC)
+FS_Reader_SetChangeCallback(my_change_handler);
+```
+
+**MSC conflict handling**: When the host computer accesses the SD card via USB MSC, disk read errors may occur. The filesystem monitor detects these errors and skips that polling cycle to avoid false change reports.
+
+Implementation: [Core/Src/fs_reader.c](Core/Src/fs_reader.c) and [Core/Inc/fs_reader.h](Core/Inc/fs_reader.h).
+
 ## How the system boots
 
 1. HAL init + system clock setup.
@@ -131,6 +174,8 @@ See [Core/Src/main.c](Core/Src/main.c), [Core/Src/app_threadx.c](Core/Src/app_th
 - Core HAL and BSP init: [Core/Inc](Core/Inc) and [Core/Src](Core/Src)
 - USBX device app: [USBX/App](USBX/App)
 - USBX STM32 target config: [USBX/Target](USBX/Target)
+- FatFs middleware: [Middlewares/Third_Party/FatFs](Middlewares/Third_Party/FatFs)
+- FatFs configuration: [Core/Inc/ffconf.h](Core/Inc/ffconf.h)
 - STM32CubeMX configuration: [WeActSTM32H5.ioc](WeActSTM32H5.ioc)
 
 ## Build (CMake)

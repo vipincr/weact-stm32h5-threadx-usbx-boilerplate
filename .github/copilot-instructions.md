@@ -25,6 +25,9 @@
 - SDMMC init: [Core/Src/sdmmc.c](../Core/Src/sdmmc.c)
 - Logger: [Core/Src/logger.c](../Core/Src/logger.c) and [Core/Inc/logger.h](../Core/Inc/logger.h)
 - LED status: [Core/Src/led_status.c](../Core/Src/led_status.c)
+- Filesystem reader/monitor: [Core/Src/fs_reader.c](../Core/Src/fs_reader.c) and [Core/Inc/fs_reader.h](../Core/Inc/fs_reader.h)
+- FatFs configuration: [Core/Inc/ffconf.h](../Core/Inc/ffconf.h)
+- FatFs disk I/O: [Core/Src/sd_diskio.c](../Core/Src/sd_diskio.c)
 
 ## Logging subsystem
 
@@ -53,6 +56,39 @@ LOG_DEBUG_TAG("DBG", "Debug info");
 - `ring_flush()` only outputs when `terminal_ready()` returns true (CDC connected with DTR set).
 - This ensures boot logs are preserved until a terminal application connects.
 
+## Filesystem monitoring
+
+The project includes FatFs-based filesystem monitoring with callback notifications:
+
+- **FatFs R0.15**: Proven filesystem library with exFAT and GPT partition support.
+- **Polling-based change detection**: Compares filesystem snapshots every 5 seconds.
+- **Recursive monitoring**: Scans up to 4 directory levels, tracking up to 128 entries.
+- **Callback architecture**: Users register a callback to receive change notifications.
+- **MSC conflict handling**: Skips change detection when disk errors occur (USB MSC accessing the card).
+
+### Filesystem monitoring usage
+
+```c
+#include "fs_reader.h"
+
+// Custom callback (optional - default logs to CDC)
+void my_handler(FS_EventType_t event, const char *path)
+{
+    // event: FS_EVENT_FILE_CREATED, FILE_MODIFIED, FILE_DELETED, DIR_CREATED, DIR_DELETED
+    // path: full path like "/Hello/file.txt"
+}
+
+FS_Reader_SetChangeCallback(my_handler);
+```
+
+### Filesystem architecture
+
+- `FS_Reader_Init()` creates a ThreadX thread (priority 25) that mounts FatFs and monitors.
+- Two static snapshots (~17KB each) store filesystem state for comparison.
+- On each poll cycle, a new snapshot is taken recursively and compared to the previous.
+- Changes are reported via the registered callback (default: log to CDC).
+- Disk errors during snapshot set `has_error` flag, causing that cycle to be skipped.
+
 ## Coding conventions
 
 - C language, STM32 HAL style.
@@ -73,6 +109,9 @@ LOG_DEBUG_TAG("DBG", "Debug info");
 - For MSC, implement `USBD_STORAGE_*` callbacks to access the SD card and perform cache maintenance when DMA is used.
 - Ensure required peripherals are initialized **before** USBX device stack starts.
 - For logging, use `LOG_*_TAG()` macros - no special handling needed, the logger buffers until terminal connects.
+- For filesystem monitoring, use `FS_Reader_SetChangeCallback()` to register custom handlers.
+- Large structures (>1KB) should be static, not stack-allocated, to avoid ThreadX stack overflow.
+- FatFs and USB MSC can conflict - FatFs operations may fail when host is accessing SD via USB.
 
 ## Verification
 
