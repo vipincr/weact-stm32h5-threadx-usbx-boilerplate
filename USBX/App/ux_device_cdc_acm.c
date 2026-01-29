@@ -45,7 +45,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-static UX_SLAVE_CLASS_CDC_ACM *cdc_acm_instance_ptr = UX_NULL;
+UX_SLAVE_CLASS_CDC_ACM *cdc_acm_instance_ptr = UX_NULL;
 static ULONG cdc_last_line_state = 0U;
 /* USER CODE END PV */
 
@@ -80,14 +80,14 @@ static void cdc_update_led_from_line_state(UX_SLAVE_CLASS_CDC_ACM *instance)
     if ((cdc_last_line_state & UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_DTR) == 0U)
     {
       Logger_SetCdcInstance(cdc_acm_instance_ptr);
-      LOG_INFO_TAG("CDC", "Connected");
+      /* Don't log here - avoid any issues during activation */
     }
   }
   else
   {
     if ((cdc_last_line_state & UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_DTR) != 0U)
     {
-      LOG_INFO_TAG("CDC", "Disconnected");
+      /* Don't log here - avoid any issues during deactivation */
       Logger_SetCdcInstance(UX_NULL);
     }
   }
@@ -128,10 +128,9 @@ VOID USBD_CDC_ACM_Activate(VOID *cdc_acm_instance)
                                 &write_timeout);
 #endif
 
-  /* Set CDC instance for logger - writes can happen after enumeration.
-   * The write timeout handles cases where host hasn't opened the port yet.
+  /* Don't enable logger here - wait for DTR signal.
+   * Logger_SetCdcInstance is called from cdc_update_led_from_line_state when DTR is set.
    */
-  Logger_SetCdcInstance(cdc_acm_instance_ptr);
 
   /* Check current line state for LED/logging purposes */
   cdc_update_led_from_line_state(cdc_acm_instance_ptr);

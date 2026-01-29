@@ -1,8 +1,8 @@
 # STM32H5 USB Composite (ThreadX + USBX)
 
-This repository targets the WeAct STM32H5 Core board (STM32H562RGT6) and is structured as an Azure RTOS (ThreadX) + USBX firmware project intended to expose a **USB composite device**:
+This repository targets the WeAct STM32H5 Core board (STM32H562RGT6) and is structured as an Azure RTOS (ThreadX) + USBX firmware project exposing a **USB composite device**:
 
-- **USB CDC ACM**: virtual UART over USB.
+- **USB CDC ACM**: virtual UART over USB for logging.
 - **USB Mass Storage**: SD card (SDMMC1) read/write over USB.
 
 Board reference: https://github.com/WeActStudio/WeActStudio.STM32H5_64Pin_CoreBoard
@@ -49,7 +49,7 @@ Configured in [AZURE_RTOS/App/app_azure_rtos.c](AZURE_RTOS/App/app_azure_rtos.c)
 
 - USBX system memory: 5KB (`USBX_DEVICE_MEMORY_STACK_SIZE`).
 - USB device stack initialized with framework descriptors and string framework.
-- USB composite device enabled: **CDC ACM + MSC**.
+- USB composite device: **CDC ACM + MSC**.
 
 Implementation in [USBX/App/app_usbx_device.c](USBX/App/app_usbx_device.c) and descriptors in [USBX/App/ux_device_descriptors.c](USBX/App/ux_device_descriptors.c).
 
@@ -71,35 +71,57 @@ Defined in [Core/Src/sdmmc.c](Core/Src/sdmmc.c).
 
 The device enumerates as a composite device:
 
-- **CDC ACM**: virtual serial port used for logs.
-- **MSC**: exposes the SD card as a Mass Storage device.
+- **CDC ACM**: virtual serial port used for logging output.
+- **MSC**: exposes the SD card as a Mass Storage device (if SD card is present at boot).
 
 See [USBX/App/ux_device_descriptors.c](USBX/App/ux_device_descriptors.c) and [USBX/App/app_usbx_device.c](USBX/App/app_usbx_device.c).
 
+### Logging subsystem
+
+The firmware includes a ring buffer-based logger that outputs colored messages to the CDC ACM interface:
+
+- **Ring buffer**: 2KB buffer preserves boot logs until a terminal connects.
+- **DTR detection**: Logs only flush when the terminal sets DTR (Data Terminal Ready).
+- **Colored output**: ANSI escape codes for log levels:
+  - ERROR: Red
+  - WARN: Yellow
+  - INFO: Green
+  - DEBUG: Cyan
+- **Boot log flush**: A one-shot thread waits 5 seconds then outputs "Logger initialized", flushing all buffered boot messages.
+
+Usage:
+```c
+LOG_INFO("Simple message");
+LOG_INFO_TAG("TAG", "Message with value: %d", value);
+LOG_ERROR_TAG("MSC", "SD card read failed");
+```
+
+Implementation: [Core/Src/logger.c](Core/Src/logger.c) and [Core/Inc/logger.h](Core/Inc/logger.h).
+
 ### LED status behavior
 
-The BLUE LED (PB2) is used as a status indicator and is driven from a **low-priority ThreadX thread**:
+The BLUE LED (PB2) is used as a status indicator:
 
 - **Off**: CDC is not active.
 - **Long blink**: USB is configured and CDC is present, but the host has not opened the CDC port yet (DTR not asserted).
-- **Solid on**: host opened the CDC port (DTR asserted) and logs are enabled.
+- **Solid on**: host opened the CDC port (DTR asserted).
 
 Implementation: [Core/Src/led_status.c](Core/Src/led_status.c) and CDC line-state handling in [USBX/App/ux_device_cdc_acm.c](USBX/App/ux_device_cdc_acm.c).
 
-### What is still stubbed / missing
+### SD card / MSC behavior
 
-
-- SD card/MSC behavior still depends on the SD card being present and formatted.
-- If the SD card is missing or not responding, MSC reads/writes can fail.
-
-These gaps must be addressed before the composite device is functional.
+- MSC class is only registered if an SD card is detected at boot.
+- If no SD card is present, the device enumerates as CDC-only.
+- Hot-plug of SD cards is not currently supported.
 
 ## How the system boots
 
 1. HAL init + system clock setup.
 2. GPIO, caches, RTC, CORDIC, FMAC are initialized.
-3. ThreadX kernel starts (`MX_ThreadX_Init`).
-4. In `tx_application_define`, ThreadX and USBX byte pools are created and USBX device stack is initialized.
+3. SD card detection and initialization (if present).
+4. ThreadX kernel starts (`MX_ThreadX_Init`).
+5. In `tx_application_define`, ThreadX and USBX byte pools are created and USBX device stack is initialized.
+6. Logger flush thread waits 5 seconds then triggers boot log flush.
 
 See [Core/Src/main.c](Core/Src/main.c), [Core/Src/app_threadx.c](Core/Src/app_threadx.c), and [AZURE_RTOS/App/app_azure_rtos.c](AZURE_RTOS/App/app_azure_rtos.c).
 
@@ -110,7 +132,6 @@ See [Core/Src/main.c](Core/Src/main.c), [Core/Src/app_threadx.c](Core/Src/app_th
 - USBX device app: [USBX/App](USBX/App)
 - USBX STM32 target config: [USBX/Target](USBX/Target)
 - STM32CubeMX configuration: [WeActSTM32H5.ioc](WeActSTM32H5.ioc)
-- Keil MDK project: [MDK-ARM/WeActSTM32H5.uvprojx](MDK-ARM/WeActSTM32H5.uvprojx)
 
 ## Build (CMake)
 
@@ -149,24 +170,14 @@ Use `builder.sh` for clean/build/flash/monitor convenience. It uses the CMake pr
    - `./builder.sh flash --address 0x08000000`
 - All (clean → build → flash):
    - `./builder.sh all --type Debug --address 0x08000000`
-- UART monitor (debug header):
-   - `./builder.sh monitor --device /dev/cu.usbserial-XXXX --baud 115200`
-
-## Planned work to reach the composite device goal
-
-1. **Enable CDC ACM in descriptors**
-   - Add `CLASS_TYPE_CDC_ACM` to `UserClassInstance` and define CDC interfaces/endpoints in the framework builder in [USBX/App/ux_device_descriptors.c](USBX/App/ux_device_descriptors.c).
-2. **Register CDC class at runtime**
-   - Register CDC ACM via `ux_device_stack_class_register` in [USBX/App/app_usbx_device.c](USBX/App/app_usbx_device.c).
-3. **Wire MSC callbacks to SDMMC1**
-   - Implement `USBD_STORAGE_*` to call `HAL_SD_ReadBlocks/WriteBlocks` with cache maintenance as needed in [USBX/App/ux_device_msc.c](USBX/App/ux_device_msc.c).
-4. **Initialize USB and SDMMC peripherals**
-   - Ensure `MX_USB_PCD_Init()` and `MX_SDMMC1_SD_Init()` are called before USBX starts.
+- CDC monitor:
+   - `./builder.sh monitor --device /dev/cu.usbmodemXXXX`
 
 ## Notes for contributors
 
 - Generated code uses **USER CODE** regions. Keep changes inside those blocks to avoid being overwritten by STM32CubeMX regeneration.
 - Update [WeActSTM32H5.ioc](WeActSTM32H5.ioc) if you change clocks, USB, SDMMC, or middleware configuration.
+- The logger is self-contained - just use `LOG_*` macros, no special initialization needed by callers.
 
 ## Troubleshooting (macOS)
 
@@ -177,4 +188,4 @@ If `./builder.sh enumerate` shows no new USB device:
 - Run `system_profiler SPUSBDataType` (without filters) and search for any new device when you plug/unplug the board.
 - Watch for new serial ports: `ls /dev/cu.* /dev/tty.* | grep -i "usb\|modem"`.
 
-To turn the LED polarity if needed (some boards differ), adjust `LED_STATUS_ACTIVE_LOW` in [Core/Inc/led_status.h](Core/Inc/led_status.h).
+To invert LED polarity if needed (some boards differ), adjust `LED_STATUS_ACTIVE_LOW` in [Core/Inc/led_status.h](Core/Inc/led_status.h).

@@ -2,9 +2,6 @@
 	"folders": [
 		{
 			"path": "."
-		},
-		{
-			"path": "../WeActStudio.STM32H5_64Pin_CoreBoard/Examples"
 		}
 	]
 }

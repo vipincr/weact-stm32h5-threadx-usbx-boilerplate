@@ -25,14 +25,14 @@
     #define LOG_LEVEL LOG_LEVEL_DEBUG
 #endif
 
-#define LOG_MAX_LENGTH 256
+#define LOG_MAX_LENGTH 128
 
 /* Color codes for terminal output */
-#define LOG_COLOR_RESET  "\033[0m"
-#define LOG_COLOR_DEBUG  "\033[0;36m[DEBUG]\033[0m"
-#define LOG_COLOR_INFO   "\033[0;32m[INFO]\033[0m"
-#define LOG_COLOR_WARN   "\033[0;33m[WARN]\033[0m"
-#define LOG_COLOR_ERROR  "\033[0;31m[ERROR]\033[0m"
+#define LOG_COLOR_RESET   "\033[0m"
+#define LOG_COLOR_RED     "\033[0;31m"
+#define LOG_COLOR_GREEN   "\033[0;32m"
+#define LOG_COLOR_YELLOW  "\033[0;33m"
+#define LOG_COLOR_CYAN    "\033[0;36m"
 
 /* Public function declarations */
 void Logger_Init(void);
