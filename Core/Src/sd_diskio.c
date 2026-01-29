@@ -98,17 +98,14 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
         {
             if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
             {
-                LOG_ERROR_TAG("DISKIO", "Timeout sector %lu", (unsigned long)sector);
+                /* Timeout expected during MSC/FatFs contention - don't log */
                 return RES_ERROR;
             }
         }
         
         res = RES_OK;
     }
-    else
-    {
-        LOG_ERROR_TAG("DISKIO", "Read err sector %lu hal=%d", (unsigned long)sector, (int)hal_status);
-    }
+    /* Note: Read errors are expected during MSC/FatFs contention - don't log them */
 
     return res;
 }

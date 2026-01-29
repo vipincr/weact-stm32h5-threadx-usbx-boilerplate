@@ -1,10 +1,10 @@
 /**
   ******************************************************************************
   * @file    fs_reader.c
-  * @brief   Filesystem reader - ThreadX wrapper for FatFs exFAT access
+  * @brief   Filesystem reader - ThreadX wrapper for FatFs with change monitoring
   ******************************************************************************
   * This module provides a ThreadX thread that mounts the SD card's exFAT
-  * filesystem and lists the root directory contents via the CDC logger.
+  * filesystem, lists contents, and monitors for changes via callbacks.
   ******************************************************************************
   */
 
@@ -18,8 +18,39 @@
 #include <stdio.h>
 
 /* Private defines -----------------------------------------------------------*/
-#define FS_READER_THREAD_STACK_SIZE   4096U  /* Increased for FatFs + exFAT */
-#define FS_READER_THREAD_PRIORITY     25U  /* Lower priority than USB (10) */
+#define FS_READER_THREAD_STACK_SIZE   4096U  /* Stack for FatFs + exFAT + recursion */
+#define FS_READER_THREAD_PRIORITY     25U    /* Lower priority than USB (10) */
+
+/* Filesystem monitoring configuration */
+#define FS_MONITOR_MAX_ENTRIES     128U  /* Max total files/dirs to track */
+#define FS_MONITOR_POLL_SECONDS    5U    /* Poll interval in seconds */
+#define FS_MONITOR_MAX_PATH_LEN    128U  /* Max full path length */
+#define FS_MONITOR_MAX_DEPTH       4U    /* Max recursion depth for subdirectories */
+
+/* Private types -------------------------------------------------------------*/
+
+/**
+  * @brief  Cached file/directory entry for change detection.
+  *         Stores full path for callback notification.
+  */
+typedef struct {
+    char     path[FS_MONITOR_MAX_PATH_LEN];  /* Full path (e.g., "/subdir/file.txt") */
+    FSIZE_t  size;                            /* File size (0 for directories) */
+    WORD     fdate;                           /* Modification date */
+    WORD     ftime;                           /* Modification time */
+    BYTE     is_dir;                          /* 1 if directory, 0 if file */
+    BYTE     valid;                           /* 1 if entry is in use */
+} FS_EntryCache_t;
+
+/**
+  * @brief  Snapshot of entire filesystem tree for change detection.
+  */
+typedef struct {
+    FS_EntryCache_t entries[FS_MONITOR_MAX_ENTRIES];
+    uint16_t        count;       /* Number of valid entries */
+    uint8_t         initialized; /* 1 if snapshot has been taken */
+    uint8_t         has_error;   /* 1 if disk error occurred during snapshot */
+} FS_Snapshot_t;
 
 /* Private variables ---------------------------------------------------------*/
 static TX_THREAD fs_reader_thread;
@@ -28,12 +59,42 @@ static UCHAR fs_reader_thread_stack[FS_READER_THREAD_STACK_SIZE];
 static FATFS SDFatFs;       /* FatFs filesystem object */
 static volatile int fs_mounted = 0;
 
+/* Filesystem snapshot for change detection */
+static FS_Snapshot_t fs_snapshot;
+static FS_Snapshot_t fs_new_snapshot;  /* Second snapshot for comparison (too large for stack) */
+
+/* User-registered callback for change notifications */
+static FS_ChangeCallback_t fs_change_callback = NULL;
+
 /* Private function prototypes -----------------------------------------------*/
 static VOID fs_reader_thread_entry(ULONG thread_input);
 static void fs_list_directory(const char *path);
 static const char* fs_result_str(FRESULT res);
+static void fs_take_snapshot_recursive(const char *path, FS_Snapshot_t *snapshot, int depth);
+static void fs_detect_changes(FS_Snapshot_t *old_snap, FS_Snapshot_t *new_snap);
+static const FS_EntryCache_t* fs_find_entry(const FS_Snapshot_t *snap, const char *path);
+static void fs_notify_change(FS_EventType_t event, const char *path);
+static void fs_default_change_handler(FS_EventType_t event_type, const char *path);
+static void fs_build_path(char *dest, size_t dest_len, const char *dir, const char *name);
+static void format_size(FSIZE_t size, char *buf, size_t buf_len);
 
 /* Public functions ----------------------------------------------------------*/
+
+/**
+  * @brief  Convert event type to string for logging.
+  */
+const char* FS_Reader_EventTypeStr(FS_EventType_t event_type)
+{
+    switch (event_type)
+    {
+        case FS_EVENT_FILE_CREATED:  return "FILE_CREATED";
+        case FS_EVENT_FILE_MODIFIED: return "FILE_MODIFIED";
+        case FS_EVENT_FILE_DELETED:  return "FILE_DELETED";
+        case FS_EVENT_DIR_CREATED:   return "DIR_CREATED";
+        case FS_EVENT_DIR_DELETED:   return "DIR_DELETED";
+        default:                      return "UNKNOWN";
+    }
+}
 
 /**
   * @brief  Initialize the filesystem reader thread.
@@ -45,6 +106,9 @@ UINT FS_Reader_Init(TX_BYTE_POOL *byte_pool)
 
     (void)byte_pool;  /* Using static allocation */
     stack_ptr = fs_reader_thread_stack;
+
+    /* Set default callback to log changes */
+    fs_change_callback = fs_default_change_handler;
 
     status = tx_thread_create(&fs_reader_thread,
                               "FS Reader",
@@ -63,6 +127,14 @@ UINT FS_Reader_Init(TX_BYTE_POOL *byte_pool)
     }
 
     return status;
+}
+
+/**
+  * @brief  Register a callback for filesystem change notifications.
+  */
+void FS_Reader_SetChangeCallback(FS_ChangeCallback_t callback)
+{
+    fs_change_callback = callback;
 }
 
 /**
@@ -89,6 +161,64 @@ int FS_Reader_ListDir(const char *path)
 }
 
 /* Private functions ---------------------------------------------------------*/
+
+/**
+  * @brief  Default change handler - logs changes using the Logger.
+  */
+static void fs_default_change_handler(FS_EventType_t event_type, const char *path)
+{
+    const char *event_str;
+    const char *icon;
+
+    switch (event_type)
+    {
+        case FS_EVENT_FILE_CREATED:
+            event_str = "CREATED";
+            icon = "+";
+            break;
+        case FS_EVENT_FILE_MODIFIED:
+            event_str = "MODIFIED";
+            icon = "*";
+            break;
+        case FS_EVENT_FILE_DELETED:
+            event_str = "DELETED";
+            icon = "-";
+            break;
+        case FS_EVENT_DIR_CREATED:
+            event_str = "CREATED";
+            icon = "+";
+            break;
+        case FS_EVENT_DIR_DELETED:
+            event_str = "DELETED";
+            icon = "-";
+            break;
+        default:
+            event_str = "UNKNOWN";
+            icon = "?";
+            break;
+    }
+
+    /* Log with different format for files vs directories */
+    if (event_type == FS_EVENT_DIR_CREATED || event_type == FS_EVENT_DIR_DELETED)
+    {
+        LOG_INFO_TAG("FS", "[%s%s] %s/", icon, event_str, path);
+    }
+    else
+    {
+        LOG_INFO_TAG("FS", "[%s%s] %s", icon, event_str, path);
+    }
+}
+
+/**
+  * @brief  Notify change via callback.
+  */
+static void fs_notify_change(FS_EventType_t event, const char *path)
+{
+    if (fs_change_callback != NULL)
+    {
+        fs_change_callback(event, path);
+    }
+}
 
 /**
   * @brief  Convert FRESULT to string for logging.
@@ -149,7 +279,7 @@ static void format_size(FSIZE_t size, char *buf, size_t buf_len)
 }
 
 /**
-  * @brief  List directory contents to logger.
+  * @brief  List directory contents to logger (non-recursive, for display only).
   */
 static void fs_list_directory(const char *path)
 {
@@ -240,6 +370,267 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
         LOG_INFO_TAG("FS", "Mounted %s filesystem", fs_type);
     }
 
-    /* List root directory */
+    /* List root directory and take initial snapshot */
     fs_list_directory("/");
+    memset(&fs_snapshot, 0, sizeof(fs_snapshot));
+    fs_take_snapshot_recursive("/", &fs_snapshot, 0);
+    LOG_INFO_TAG("FS", "Monitoring filesystem (%u entries, poll: %us)",
+                 (unsigned)fs_snapshot.count, FS_MONITOR_POLL_SECONDS);
+
+    /* Main monitoring loop */
+    for (;;)
+    {
+        tx_thread_sleep(FS_MONITOR_POLL_SECONDS * TX_TIMER_TICKS_PER_SECOND);
+
+        /* Check if SD card is still present */
+        if (!SDMMC1_IsInitialized())
+        {
+            LOG_WARN_TAG("FS", "SD card removed");
+            fs_mounted = 0;
+            fs_snapshot.initialized = 0;
+
+            /* Wait for card to be reinserted */
+            while (!SDMMC1_IsInitialized())
+            {
+                tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
+            }
+
+            /* Remount filesystem */
+            res = f_mount(&SDFatFs, "", 1);
+            if (res != FR_OK)
+            {
+                LOG_ERROR_TAG("FS", "Remount failed: %s", fs_result_str(res));
+                continue;
+            }
+
+            fs_mounted = 1;
+            LOG_INFO_TAG("FS", "SD card reinserted, filesystem remounted");
+            fs_list_directory("/");
+            memset(&fs_snapshot, 0, sizeof(fs_snapshot));
+            fs_take_snapshot_recursive("/", &fs_snapshot, 0);
+            continue;
+        }
+
+        /* Take new snapshot and detect changes */
+        memset(&fs_new_snapshot, 0, sizeof(fs_new_snapshot));
+        fs_take_snapshot_recursive("/", &fs_new_snapshot, 0);
+
+        /* Skip change detection if disk error occurred (MSC conflict) */
+        if (fs_new_snapshot.has_error)
+        {
+            continue;
+        }
+
+        fs_detect_changes(&fs_snapshot, &fs_new_snapshot);
+
+        /* Replace old snapshot with new */
+        memcpy(&fs_snapshot, &fs_new_snapshot, sizeof(fs_snapshot));
+    }
+}
+
+/**
+  * @brief  Build full path from directory path and filename.
+  */
+static void fs_build_path(char *dest, size_t dest_len, const char *dir, const char *name)
+{
+    size_t dir_len = strlen(dir);
+
+    if (dir_len == 1 && dir[0] == '/')
+    {
+        /* Root directory - just prepend slash */
+        snprintf(dest, dest_len, "/%s", name);
+    }
+    else
+    {
+        /* Subdirectory - append with slash */
+        snprintf(dest, dest_len, "%s/%s", dir, name);
+    }
+}
+
+/**
+  * @brief  Take a snapshot of directory contents recursively.
+  */
+static void fs_take_snapshot_recursive(const char *path, FS_Snapshot_t *snapshot, int depth)
+{
+    FRESULT res;
+    DIR dir;
+    FILINFO fno;
+    char full_path[FS_MONITOR_MAX_PATH_LEN];
+
+    /* Limit recursion depth to prevent stack overflow */
+    if (depth >= FS_MONITOR_MAX_DEPTH)
+    {
+        return;
+    }
+
+    /* Stop if we already encountered an error */
+    if (snapshot->has_error)
+    {
+        return;
+    }
+
+    res = f_opendir(&dir, path);
+    if (res != FR_OK)
+    {
+        if (res == FR_DISK_ERR || res == FR_NOT_READY || res == FR_TIMEOUT)
+        {
+            snapshot->has_error = 1;
+        }
+        return;
+    }
+
+    for (;;)
+    {
+        res = f_readdir(&dir, &fno);
+        if (res != FR_OK)
+        {
+            if (res == FR_DISK_ERR || res == FR_NOT_READY || res == FR_TIMEOUT)
+            {
+                snapshot->has_error = 1;
+            }
+            break;
+        }
+        
+        if (fno.fname[0] == '\0')
+        {
+            break;
+        }
+
+        /* Skip hidden files */
+        if (fno.fname[0] == '.')
+        {
+            continue;
+        }
+
+        /* Check if we have room for more entries */
+        if (snapshot->count >= FS_MONITOR_MAX_ENTRIES)
+        {
+            break;
+        }
+
+        /* Build full path */
+        fs_build_path(full_path, sizeof(full_path), path, fno.fname);
+
+        /* Add entry to snapshot */
+        FS_EntryCache_t *entry = &snapshot->entries[snapshot->count];
+        strncpy(entry->path, full_path, FS_MONITOR_MAX_PATH_LEN - 1);
+        entry->path[FS_MONITOR_MAX_PATH_LEN - 1] = '\0';
+        entry->size = fno.fsize;
+        entry->fdate = fno.fdate;
+        entry->ftime = fno.ftime;
+        entry->is_dir = (fno.fattrib & AM_DIR) ? 1 : 0;
+        entry->valid = 1;
+        snapshot->count++;
+
+        /* Recurse into subdirectories */
+        if (entry->is_dir)
+        {
+            fs_take_snapshot_recursive(full_path, snapshot, depth + 1);
+        }
+    }
+
+    f_closedir(&dir);
+    snapshot->initialized = 1;
+}
+
+/**
+  * @brief  Find an entry in a snapshot by full path.
+  */
+static const FS_EntryCache_t* fs_find_entry(const FS_Snapshot_t *snap, const char *path)
+{
+    for (uint16_t i = 0; i < snap->count; i++)
+    {
+        if (snap->entries[i].valid && strcmp(snap->entries[i].path, path) == 0)
+        {
+            return &snap->entries[i];
+        }
+    }
+    return NULL;
+}
+
+/**
+  * @brief  Detect and report changes between two snapshots via callback.
+  */
+static void fs_detect_changes(FS_Snapshot_t *old_snap, FS_Snapshot_t *new_snap)
+{
+    if (!old_snap->initialized)
+    {
+        return;  /* No previous snapshot to compare */
+    }
+
+    /* Check for new entries and modifications */
+    for (uint16_t i = 0; i < new_snap->count; i++)
+    {
+        const FS_EntryCache_t *new_entry = &new_snap->entries[i];
+        if (!new_entry->valid)
+        {
+            continue;
+        }
+
+        const FS_EntryCache_t *old_entry = fs_find_entry(old_snap, new_entry->path);
+
+        if (old_entry == NULL)
+        {
+            /* Entry is new - created */
+            if (new_entry->is_dir)
+            {
+                fs_notify_change(FS_EVENT_DIR_CREATED, new_entry->path);
+            }
+            else
+            {
+                fs_notify_change(FS_EVENT_FILE_CREATED, new_entry->path);
+            }
+        }
+        else
+        {
+            /* Entry exists - check for modifications (files only) */
+            if (!new_entry->is_dir)
+            {
+                int modified = 0;
+
+                /* Check size change */
+                if (new_entry->size != old_entry->size)
+                {
+                    modified = 1;
+                }
+
+                /* Check date/time change */
+                if (new_entry->fdate != old_entry->fdate ||
+                    new_entry->ftime != old_entry->ftime)
+                {
+                    modified = 1;
+                }
+
+                if (modified)
+                {
+                    fs_notify_change(FS_EVENT_FILE_MODIFIED, new_entry->path);
+                }
+            }
+        }
+    }
+
+    /* Check for deleted entries */
+    for (uint16_t i = 0; i < old_snap->count; i++)
+    {
+        const FS_EntryCache_t *old_entry = &old_snap->entries[i];
+        if (!old_entry->valid)
+        {
+            continue;
+        }
+
+        const FS_EntryCache_t *new_entry = fs_find_entry(new_snap, old_entry->path);
+
+        if (new_entry == NULL)
+        {
+            /* Entry was deleted */
+            if (old_entry->is_dir)
+            {
+                fs_notify_change(FS_EVENT_DIR_DELETED, old_entry->path);
+            }
+            else
+            {
+                fs_notify_change(FS_EVENT_FILE_DELETED, old_entry->path);
+            }
+        }
+    }
 }
