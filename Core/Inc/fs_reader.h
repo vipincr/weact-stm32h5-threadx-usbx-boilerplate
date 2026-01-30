@@ -56,6 +56,27 @@ void FS_Reader_SetChangeCallback(FS_ChangeCallback_t callback);
 int FS_Reader_IsMounted(void);
 
 /**
+  * @brief  Unmount the filesystem.
+  *         Call this before switching to MSC mode.
+  * @retval 0 on success, -1 on error.
+  */
+int FS_Reader_Unmount(void);
+
+/**
+  * @brief  Mount the filesystem.
+  *         Call this after switching from MSC mode back to FatFS mode.
+  * @retval 0 on success, -1 on error.
+  */
+int FS_Reader_Mount(void);
+
+/**
+  * @brief  Remount the filesystem to clear stale FatFS cache.
+  *         Call this after USB MSC activity to see updated files.
+  * @retval 0 on success, -1 on error.
+  */
+int FS_Reader_Remount(void);
+
+/**
   * @brief  List contents of a directory to the logger.
   * @param  path  Path to directory (e.g., "/" for root, "/subdir")
   * @retval 0 on success, -1 on error.

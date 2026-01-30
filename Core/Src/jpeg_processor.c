@@ -3,8 +3,8 @@
   * @file    jpeg_processor.c
   * @brief   JPEG Processor - Converts Bayer RAW .bin files to JPEG
   ******************************************************************************
-  * This module integrates with the filesystem change notifier to automatically
-  * encode .bin files (Bayer RAW) to JPEG format when they are created or modified.
+  * This module uses streaming encoding to minimize RAM usage.
+  * Files are read and written directly via FatFS without large buffers.
   ******************************************************************************
   */
 
@@ -16,21 +16,25 @@
 #include "logger.h"
 #include "time_it.h"
 #include <string.h>
-#include <stdlib.h>
 
 /* Private defines -----------------------------------------------------------*/
 #define JPEG_PROC_TAG  "JPEG"
+
+/* Stream context for FatFS file I/O */
+typedef struct {
+    FIL *fin;              /* Input file handle */
+    FIL *fout;             /* Output file handle */
+    size_t bytes_written;  /* Track output size */
+} jpeg_stream_ctx_t;
 
 /* Private variables ---------------------------------------------------------*/
 static int jpeg_proc_initialized = 0;
 static uint32_t last_encoding_time_ms = 0;
 static size_t last_output_size = 0;
 
-/* Static buffers for encoding - large so must be static, not stack */
-static uint8_t *jpeg_input_buffer = NULL;
-static uint8_t *jpeg_output_buffer = NULL;
-static size_t jpeg_input_buffer_size = 0;
-static size_t jpeg_output_buffer_size = 0;
+/* Debug counters for stream callbacks */
+static volatile uint32_t read_call_count = 0;
+static volatile uint32_t read_total_bytes = 0;
 
 /* Default configuration */
 static const JPEG_Processor_Config_t default_config = {
@@ -44,7 +48,8 @@ static const JPEG_Processor_Config_t default_config = {
 /* Private function prototypes -----------------------------------------------*/
 static void jpeg_fs_change_handler(FS_EventType_t event_type, const char *path);
 static int jpeg_build_output_path(char *out_path, size_t out_len, const char *bin_path);
-static int jpeg_ensure_buffers(size_t input_size, size_t output_capacity);
+static size_t jpeg_stream_read(void *ctx, void *buf, size_t size);
+static size_t jpeg_stream_write(void *ctx, const void *buf, size_t size);
 
 /* Public functions ----------------------------------------------------------*/
 
@@ -90,15 +95,18 @@ JPEG_Processor_Status_t JPEG_Processor_Init(void)
     return JPEG_PROC_OK;
 }
 
+int JPEG_Processor_IsInitialized(void)
+{
+    return jpeg_proc_initialized ? 1 : 0;
+}
+
 JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
                                                     const JPEG_Processor_Config_t *config)
 {
     FRESULT fres;
     FIL fin, fout;
-    UINT bytes_read, bytes_written;
     FSIZE_t file_size;
     char jpg_path[128];
-    size_t jpg_size = 0;
     int encode_result;
     uint32_t elapsed_ms = 0;
     
@@ -130,10 +138,11 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
     LOG_INFO_TAG(JPEG_PROC_TAG, "Processing: %s", bin_path);
     
     /* Open input file */
+    LOG_DEBUG_TAG(JPEG_PROC_TAG, "Opening input file...");
     fres = f_open(&fin, bin_path, FA_READ);
     if (fres != FR_OK)
     {
-        LOG_ERROR_TAG(JPEG_PROC_TAG, "Open failed: %s (err=%d)", bin_path, fres);
+        LOG_ERROR_TAG(JPEG_PROC_TAG, "Open input failed: %s (err=%d)", bin_path, fres);
         return JPEG_PROC_ERR_OPEN_INPUT;
     }
     
@@ -147,27 +156,29 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
         return JPEG_PROC_ERR_FILE_TOO_LARGE;
     }
     
-    /* Estimate output size (worst case: uncompressed RGB) */
-    size_t output_capacity = (size_t)(config->width * config->height * 3);
-    
-    /* Ensure we have buffers */
-    if (jpeg_ensure_buffers((size_t)file_size, output_capacity) != 0)
+    /* Open output file */
+    fres = f_open(&fout, jpg_path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fres != FR_OK)
     {
-        LOG_ERROR_TAG(JPEG_PROC_TAG, "Buffer allocation failed");
+        LOG_ERROR_TAG(JPEG_PROC_TAG, "Create output failed: %s (err=%d)", jpg_path, fres);
         f_close(&fin);
-        return JPEG_PROC_ERR_ALLOC;
+        return JPEG_PROC_ERR_CREATE_OUTPUT;
     }
     
-    /* Read entire input file */
-    fres = f_read(&fin, jpeg_input_buffer, (UINT)file_size, &bytes_read);
-    f_close(&fin);
+    /* Set up stream context */
+    jpeg_stream_ctx_t stream_ctx = {
+        .fin = &fin,
+        .fout = &fout,
+        .bytes_written = 0
+    };
     
-    if (fres != FR_OK || bytes_read != (UINT)file_size)
-    {
-        LOG_ERROR_TAG(JPEG_PROC_TAG, "Read failed: %d bytes (expected %lu)", 
-                      bytes_read, (unsigned long)file_size);
-        return JPEG_PROC_ERR_READ_INPUT;
-    }
+    /* Set up stream interface */
+    jpeg_stream_t stream = {
+        .read = jpeg_stream_read,
+        .read_ctx = &stream_ctx,
+        .write = jpeg_stream_write,
+        .write_ctx = &stream_ctx
+    };
     
     /* Configure encoder */
     jpeg_encoder_config_t enc_config;
@@ -185,11 +196,22 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
     enc_config.enable_fast_mode = config->enable_fast_mode ? true : false;
     enc_config.subsample = JPEG_SUBSAMPLE_420;  /* Good compression/quality balance */
     
-    /* Encode with timing */
-    TIME_IT(elapsed_ms, 
-            encode_result = jpeg_encode_buffer(jpeg_input_buffer, (size_t)file_size,
-                                               jpeg_output_buffer, output_capacity,
-                                               &jpg_size, &enc_config));
+    /* Check memory requirements before encoding */
+    size_t mem_req = jpeg_encoder_estimate_memory_requirement(&enc_config);
+    LOG_DEBUG_TAG(JPEG_PROC_TAG, "Memory required: %lu bytes", (unsigned long)mem_req);
+    
+    /* Reset read counters */
+    read_call_count = 0;
+    read_total_bytes = 0;
+    
+    /* Encode using streaming (low memory usage) */
+    LOG_DEBUG_TAG(JPEG_PROC_TAG, "Starting encode...");
+    TIME_IT(elapsed_ms, encode_result = jpeg_encode_stream(&stream, &enc_config));
+    LOG_DEBUG_TAG(JPEG_PROC_TAG, "Encode returned: %d", encode_result);
+    
+    /* Close files */
+    f_close(&fin);
+    f_close(&fout);
     
     if (encode_result != 0)
     {
@@ -197,36 +219,22 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
         jpeg_encoder_get_last_error(&err);
         LOG_ERROR_TAG(JPEG_PROC_TAG, "Encode failed: %d (%s)", 
                       encode_result, err.message ? err.message : "unknown");
+        /* Delete partial output file */
+        f_unlink(jpg_path);
         return JPEG_PROC_ERR_ENCODE;
-    }
-    
-    /* Write output file */
-    fres = f_open(&fout, jpg_path, FA_WRITE | FA_CREATE_ALWAYS);
-    if (fres != FR_OK)
-    {
-        LOG_ERROR_TAG(JPEG_PROC_TAG, "Create output failed: %s (err=%d)", jpg_path, fres);
-        return JPEG_PROC_ERR_CREATE_OUTPUT;
-    }
-    
-    fres = f_write(&fout, jpeg_output_buffer, (UINT)jpg_size, &bytes_written);
-    f_close(&fout);
-    
-    if (fres != FR_OK || bytes_written != (UINT)jpg_size)
-    {
-        LOG_ERROR_TAG(JPEG_PROC_TAG, "Write failed: %d bytes (expected %zu)", 
-                      bytes_written, jpg_size);
-        return JPEG_PROC_ERR_WRITE_OUTPUT;
     }
     
     /* Update stats */
     last_encoding_time_ms = elapsed_ms;
-    last_output_size = jpg_size;
+    last_output_size = stream_ctx.bytes_written;
     
-    /* Calculate compression ratio */
-    float ratio = (jpg_size > 0) ? (float)file_size / (float)jpg_size : 0.0f;
+    /* Calculate compression ratio (integer math since nano libc doesn't support %f) */
+    unsigned long ratio_x10 = (stream_ctx.bytes_written > 0) ? 
+                  ((unsigned long)file_size * 10UL) / (unsigned long)stream_ctx.bytes_written : 0UL;
     
-    LOG_INFO_TAG(JPEG_PROC_TAG, "Encoded: %s (%zu bytes, %.1fx, %lu ms)",
-                 jpg_path, jpg_size, ratio, (unsigned long)elapsed_ms);
+    LOG_INFO_TAG(JPEG_PROC_TAG, "Encoded: %s (%lu bytes, %lu.%lux, %lu ms)",
+                 jpg_path, (unsigned long)stream_ctx.bytes_written, 
+                 ratio_x10 / 10UL, ratio_x10 % 10UL, (unsigned long)elapsed_ms);
     
     return JPEG_PROC_OK;
 }
@@ -299,36 +307,60 @@ static int jpeg_build_output_path(char *out_path, size_t out_len, const char *bi
 }
 
 /**
-  * @brief  Ensure input/output buffers are allocated and large enough.
-  * @param  input_size      Required input buffer size
-  * @param  output_capacity Required output buffer capacity
-  * @retval 0 on success, -1 on allocation failure
+  * @brief  Stream read callback for FatFS.
   */
-static int jpeg_ensure_buffers(size_t input_size, size_t output_capacity)
+static size_t jpeg_stream_read(void *ctx, void *buf, size_t size)
 {
-    /* Reallocate input buffer if needed */
-    if (jpeg_input_buffer == NULL || jpeg_input_buffer_size < input_size)
+    jpeg_stream_ctx_t *stream_ctx = (jpeg_stream_ctx_t *)ctx;
+    UINT bytes_read = 0;
+    
+    if (stream_ctx == NULL || stream_ctx->fin == NULL || buf == NULL || size == 0)
     {
-        uint8_t *new_buf = (uint8_t *)realloc(jpeg_input_buffer, input_size);
-        if (new_buf == NULL)
-        {
-            return -1;
-        }
-        jpeg_input_buffer = new_buf;
-        jpeg_input_buffer_size = input_size;
+        return 0;
     }
     
-    /* Reallocate output buffer if needed */
-    if (jpeg_output_buffer == NULL || jpeg_output_buffer_size < output_capacity)
+    FRESULT res = f_read(stream_ctx->fin, buf, (UINT)size, &bytes_read);
+    if (res != FR_OK)
     {
-        uint8_t *new_buf = (uint8_t *)realloc(jpeg_output_buffer, output_capacity);
-        if (new_buf == NULL)
-        {
-            return -1;
-        }
-        jpeg_output_buffer = new_buf;
-        jpeg_output_buffer_size = output_capacity;
+        LOG_ERROR_TAG(JPEG_PROC_TAG, "Stream read error: %d (call #%lu)", 
+                      (int)res, (unsigned long)read_call_count);
+        return 0;
     }
     
-    return 0;
+    read_call_count++;
+    read_total_bytes += bytes_read;
+    
+    /* Log progress every 100 calls */
+    if ((read_call_count % 100) == 0)
+    {
+        LOG_DEBUG_TAG(JPEG_PROC_TAG, "Read progress: %lu calls, %lu KB", 
+                      (unsigned long)read_call_count, 
+                      (unsigned long)(read_total_bytes / 1024));
+    }
+    
+    return (size_t)bytes_read;
+}
+
+/**
+  * @brief  Stream write callback for FatFS.
+  */
+static size_t jpeg_stream_write(void *ctx, const void *buf, size_t size)
+{
+    jpeg_stream_ctx_t *stream_ctx = (jpeg_stream_ctx_t *)ctx;
+    UINT bytes_written = 0;
+    
+    if (stream_ctx == NULL || stream_ctx->fout == NULL || buf == NULL || size == 0)
+    {
+        return 0;
+    }
+    
+    FRESULT res = f_write(stream_ctx->fout, buf, (UINT)size, &bytes_written);
+    if (res != FR_OK)
+    {
+        LOG_ERROR_TAG(JPEG_PROC_TAG, "Stream write error: %d", (int)res);
+        return 0;
+    }
+    
+    stream_ctx->bytes_written += bytes_written;
+    return (size_t)bytes_written;
 }

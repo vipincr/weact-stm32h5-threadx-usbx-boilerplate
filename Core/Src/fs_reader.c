@@ -13,6 +13,7 @@
 #include "ff.h"
 #include "logger.h"
 #include "sdmmc.h"
+#include "sd_adapter.h"
 #include "tx_api.h"
 #include <string.h>
 #include <stdio.h>
@@ -143,6 +144,65 @@ void FS_Reader_SetChangeCallback(FS_ChangeCallback_t callback)
 int FS_Reader_IsMounted(void)
 {
     return fs_mounted;
+}
+
+/**
+  * @brief  Unmount the filesystem for MSC mode.
+  */
+int FS_Reader_Unmount(void)
+{
+    if (!fs_mounted)
+    {
+        return 0;  /* Already unmounted */
+    }
+    
+    LOG_INFO_TAG("FS", "Unmounting filesystem for MSC mode...");
+    
+    /* Unmount FatFS */
+    f_mount(NULL, "", 0);
+    fs_mounted = 0;
+    
+    /* Clear snapshot since it's no longer valid */
+    memset(&fs_snapshot, 0, sizeof(fs_snapshot));
+    
+    return 0;
+}
+
+/**
+  * @brief  Mount the filesystem after MSC mode.
+  */
+int FS_Reader_Mount(void)
+{
+    FRESULT res;
+    
+    if (fs_mounted)
+    {
+        return 0;  /* Already mounted */
+    }
+    
+    if (!SDMMC1_IsInitialized())
+    {
+        LOG_ERROR_TAG("FS", "SD card not initialized");
+        return -1;
+    }
+    
+    LOG_INFO_TAG("FS", "Mounting filesystem...");
+    
+    res = f_mount(&SDFatFs, "", 1);
+    if (res != FR_OK)
+    {
+        LOG_ERROR_TAG("FS", "Mount failed: %s", fs_result_str(res));
+        return -1;
+    }
+    
+    fs_mounted = 1;
+    
+    /* Take fresh snapshot for monitoring */
+    memset(&fs_snapshot, 0, sizeof(fs_snapshot));
+    fs_take_snapshot_recursive("/", &fs_snapshot, 0);
+    
+    LOG_INFO_TAG("FS", "Filesystem mounted (%u entries)", (unsigned)fs_snapshot.count);
+    return 0;
 }
 
 /**
@@ -332,6 +392,40 @@ static void fs_list_directory(const char *path)
 }
 
 /**
+  * @brief  Remount filesystem to clear stale FatFS cache.
+  */
+int FS_Reader_Remount(void)
+{
+    FRESULT res;
+    
+    if (!SDMMC1_IsInitialized())
+    {
+        return -1;
+    }
+    
+    LOG_DEBUG_TAG("FS", "Remounting filesystem...");
+    
+    /* Unmount to clear cache */
+    f_mount(NULL, "", 0);
+    fs_mounted = 0;
+    
+    /* Small delay for stability */
+    tx_thread_sleep(10U);  /* 100ms */
+    
+    /* Remount */
+    res = f_mount(&SDFatFs, "", 1);
+    if (res != FR_OK)
+    {
+        LOG_ERROR_TAG("FS", "Remount failed: %s", fs_result_str(res));
+        return -1;
+    }
+    
+    fs_mounted = 1;
+    LOG_DEBUG_TAG("FS", "Remount complete");
+    return 0;
+}
+
+/**
   * @brief  Filesystem reader thread entry function.
   */
 static VOID fs_reader_thread_entry(ULONG thread_input)
@@ -339,6 +433,11 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
     FRESULT res;
 
     TX_PARAMETER_NOT_USED(thread_input);
+
+    /* Initial stabilization delay - let system boot fully */
+    tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND / 2);  /* 500ms */
+    
+    LOG_INFO_TAG("FS", "Waiting for SD card...");
 
     /* Wait for SD card to be ready */
     while (!SDMMC1_IsInitialized())
@@ -377,10 +476,24 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
     LOG_INFO_TAG("FS", "Monitoring filesystem (%u entries, poll: %us)",
                  (unsigned)fs_snapshot.count, FS_MONITOR_POLL_SECONDS);
 
-    /* Main monitoring loop */
+    /* Main monitoring loop - simple polling without MSC detection.
+     * Button press is used to trigger processing, not automatic detection.
+     */
     for (;;)
     {
         tx_thread_sleep(FS_MONITOR_POLL_SECONDS * TX_TIMER_TICKS_PER_SECOND);
+
+        /* Skip monitoring if MSC is active to avoid conflicts */
+        if (SD_IsMscActive())
+        {
+            continue;
+        }
+
+        /* Skip monitoring if filesystem is unmounted (MSC mode or button switch) */
+        if (!fs_mounted)
+        {
+            continue;
+        }
 
         /* Check if SD card is still present */
         if (!SDMMC1_IsInitialized())
@@ -395,27 +508,30 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
                 tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
             }
 
-            /* Remount filesystem */
-            res = f_mount(&SDFatFs, "", 1);
-            if (res != FR_OK)
+            /* Only remount if in FatFS mode */
+            if (SD_GetMode() == SD_MODE_FATFS)
             {
-                LOG_ERROR_TAG("FS", "Remount failed: %s", fs_result_str(res));
-                continue;
-            }
+                res = f_mount(&SDFatFs, "", 1);
+                if (res != FR_OK)
+                {
+                    LOG_ERROR_TAG("FS", "Remount failed: %s", fs_result_str(res));
+                    continue;
+                }
 
-            fs_mounted = 1;
-            LOG_INFO_TAG("FS", "SD card reinserted, filesystem remounted");
-            fs_list_directory("/");
-            memset(&fs_snapshot, 0, sizeof(fs_snapshot));
-            fs_take_snapshot_recursive("/", &fs_snapshot, 0);
+                fs_mounted = 1;
+                LOG_INFO_TAG("FS", "SD card reinserted, filesystem remounted");
+                fs_list_directory("/");
+                memset(&fs_snapshot, 0, sizeof(fs_snapshot));
+                fs_take_snapshot_recursive("/", &fs_snapshot, 0);
+            }
             continue;
         }
 
-        /* Take new snapshot and detect changes */
+        /* Normal monitoring cycle - take new snapshot and detect changes */
         memset(&fs_new_snapshot, 0, sizeof(fs_new_snapshot));
         fs_take_snapshot_recursive("/", &fs_new_snapshot, 0);
 
-        /* Skip change detection if disk error occurred (MSC conflict) */
+        /* Skip change detection if disk error occurred */
         if (fs_new_snapshot.has_error)
         {
             continue;

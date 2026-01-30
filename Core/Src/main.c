@@ -105,6 +105,8 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  /* Early stabilization delay - allows power rails and clocks to settle */
+  for (volatile uint32_t i = 0; i < 500000U; i++) { __NOP(); }
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -112,6 +114,9 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
   g_boot_stage = 2U;
+  
+  /* Post-clock stabilization delay (100ms) */
+  HAL_Delay(100U);
 
   /* Check and log reset cause */
   {

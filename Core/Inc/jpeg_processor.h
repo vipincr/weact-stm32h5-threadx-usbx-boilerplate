@@ -100,6 +100,12 @@ uint32_t JPEG_Processor_GetLastEncodingTime(void);
 size_t JPEG_Processor_GetLastOutputSize(void);
 
 /**
+  * @brief  Check if JPEG processor is initialized.
+  * @retval 1 if initialized, 0 otherwise.
+  */
+int JPEG_Processor_IsInitialized(void);
+
+/**
   * @brief  Check if a file path has a .bin extension.
   * @param  path  File path to check
   * @retval 1 if .bin file, 0 otherwise.

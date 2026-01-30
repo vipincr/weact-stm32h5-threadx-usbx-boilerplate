@@ -2,13 +2,18 @@
   * @file    logger.c
   * @brief   Simple logger with ring buffer - flushes to CDC when terminal ready
   *          Thread-safe: uses ThreadX mutex for synchronization
+  *          Timestamps: HH:MM:SS.mmm since boot (no RTC)
   */
 
 #include "logger.h"
+#include "stm32h5xx_hal.h"
 #include <string.h>
 #include <stdio.h>
 
 extern UX_SLAVE_CLASS_CDC_ACM *cdc_acm_instance_ptr;
+
+/* Boot timestamp reference */
+static uint32_t boot_tick = 0U;
 
 /* Simple ring buffer - stores raw bytes */
 #define RING_SIZE 2048
@@ -19,6 +24,7 @@ static volatile uint32_t ring_tail = 0U;  /* Read position */
 /* ThreadX mutex for thread-safe logging */
 static TX_MUTEX logger_mutex;
 static UINT logger_mutex_created = 0U;
+static UINT scheduler_started = 0U;  /* Set when first thread context detected */
 
 /* Try to acquire mutex - returns 1 if acquired, 0 if not available or not in thread context */
 static int logger_lock(void)
@@ -27,9 +33,26 @@ static int logger_lock(void)
   if (logger_mutex_created == 0U)
     return 1;  /* Allow logging without lock during early boot */
   
-  /* Don't try to lock from ISR context - ThreadX mutexes can't be used from ISR */
-  if (tx_thread_identify() == TX_NULL)
-    return 0;  /* Skip logging from ISR to avoid hang */
+  /* Check if we're in a thread context */
+  TX_THREAD *current = tx_thread_identify();
+  
+  if (current == TX_NULL)
+  {
+    /* Not in thread context - either ISR or pre-scheduler */
+    if (scheduler_started)
+    {
+      /* Scheduler is running, so this is an ISR - skip to avoid hang */
+      return 0;
+    }
+    else
+    {
+      /* Scheduler not started yet - allow logging without mutex */
+      return 1;
+    }
+  }
+  
+  /* We're in a thread - scheduler must be running */
+  scheduler_started = 1U;
   
   /* Try to acquire mutex with timeout to avoid deadlock */
   if (tx_mutex_get(&logger_mutex, TX_WAIT_FOREVER) == TX_SUCCESS)
@@ -107,6 +130,9 @@ static void ring_flush(void)
 
 void Logger_Init(void)
 {
+  /* Record boot time reference */
+  boot_tick = HAL_GetTick();
+  
   /* Create mutex for thread-safe logging */
   if (logger_mutex_created == 0U)
   {
@@ -115,6 +141,24 @@ void Logger_Init(void)
       logger_mutex_created = 1U;
     }
   }
+}
+
+/**
+  * @brief  Format elapsed time as HH:MM:SS.mmm
+  */
+static void format_timestamp(char *buf, size_t buf_len)
+{
+  uint32_t elapsed_ms = HAL_GetTick() - boot_tick;
+  uint32_t ms = elapsed_ms % 1000U;
+  uint32_t total_secs = elapsed_ms / 1000U;
+  uint32_t secs = total_secs % 60U;
+  uint32_t total_mins = total_secs / 60U;
+  uint32_t mins = total_mins % 60U;
+  uint32_t hours = total_mins / 60U;
+  
+  snprintf(buf, buf_len, "%02lu:%02lu:%02lu.%03lu",
+           (unsigned long)hours, (unsigned long)mins,
+           (unsigned long)secs, (unsigned long)ms);
 }
 
 void Logger_SetCdcInstance(UX_SLAVE_CLASS_CDC_ACM *instance)
@@ -131,7 +175,8 @@ void Logger_Run(void) {}
 
 void Logger_Log(int level, const char *message)
 {
-  char buf[160];
+  char buf[192];
+  char timestamp[16];
   int len;
   const char *prefix;
   
@@ -142,15 +187,18 @@ void Logger_Log(int level, const char *message)
   if (!logger_lock())
     return;
   
+  /* Get timestamp */
+  format_timestamp(timestamp, sizeof(timestamp));
+  
   switch (level) {
-    case LOG_LEVEL_ERROR: prefix = "\033[31m[ERROR] "; break;
-    case LOG_LEVEL_WARN:  prefix = "\033[33m[WARN]  "; break;
-    case LOG_LEVEL_INFO:  prefix = "\033[32m[INFO]  "; break;
-    case LOG_LEVEL_DEBUG: prefix = "\033[36m[DEBUG] "; break;
+    case LOG_LEVEL_ERROR: prefix = "\033[31m[ERROR]"; break;
+    case LOG_LEVEL_WARN:  prefix = "\033[33m[WARN] "; break;
+    case LOG_LEVEL_INFO:  prefix = "\033[32m[INFO] "; break;
+    case LOG_LEVEL_DEBUG: prefix = "\033[36m[DEBUG]"; break;
     default: prefix = ""; break;
   }
   
-  len = snprintf(buf, sizeof(buf), "%s%s\033[0m\r\n", prefix, message);
+  len = snprintf(buf, sizeof(buf), "[%s] %s %s\033[0m\r\n", timestamp, prefix, message);
   if (len > 0)
   {
     ring_write(buf, (uint32_t)len);

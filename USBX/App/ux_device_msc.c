@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "sdmmc.h"
+#include "sd_adapter.h"
 #include "logger.h"
 #include "ux_device_class_storage.h"
 /* USER CODE END Includes */
@@ -48,22 +49,8 @@
 
 /* Diagnostic counters for MSC callbacks */
 volatile uint32_t g_msc_status_count = 0U;
-volatile uint32_t g_msc_notification_count = 0U;
 volatile uint32_t g_msc_read_count = 0U;
 volatile uint32_t g_msc_write_count = 0U;
-
-/* GET EVENT STATUS NOTIFICATION response buffer for removable media.
- * This tells macOS/Windows that media status hasn't changed.
- * Format: Event Header (4 bytes) + Media Event Descriptor (4 bytes)
- */
-static UCHAR msc_notification_response[8] = {
-  0x00, 0x02,  /* Event Descriptor Length (2 bytes after this) */
-  0x04,        /* Notification Class (0x04 = Media) */
-  0x00,        /* Supported Event Classes */
-  0x02,        /* Media Event Code: 0x02 = Media Absent (no media present) */
-  0x02,        /* Media Status: 0x02 = Media absent, door closed */
-  0x00, 0x00   /* Start Slot, End Slot */
-};
 
 /* USER CODE END PV */
 
@@ -77,30 +64,25 @@ static int32_t check_sd_status(void);
 
 /**
   * @brief  check_sd_status
-  *         check SD card Transfer Status.
+  *         Quick check if SD card is ready. Non-blocking.
   * @param  none
-  * @retval BSP status
+  * @retval 0 if ready, -1 if not
   */
 static int32_t check_sd_status(void)
 {
-  /* Just check if already initialized - don't try to init here.
-   * Card detection/init is done in main loop via SDMMC1_PollCardPresence().
-   */
+  /* Just check if already initialized */
   if (!SDMMC1_IsInitialized())
   {
     return -1;
   }
 
-  uint32_t start = HAL_GetTick();
-
-  while (HAL_GetTick() - start < SD_TIMEOUT)
+  /* Quick non-blocking check - just see if card is in transfer state now */
+  if (HAL_SD_GetCardState(&hsd1) == HAL_SD_CARD_TRANSFER)
   {
-    if (HAL_SD_GetCardState(&hsd1) == HAL_SD_CARD_TRANSFER)
-    {
-      return 0;
-    }
+    return 0;
   }
 
+  /* Card busy - don't wait, just report not ready */
   return -1;
 }
 /* USER CODE END 0 */
@@ -115,6 +97,7 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Activate */
   UX_PARAMETER_NOT_USED(storage_instance);
+  SD_SetMscActive(1);  /* Pause FatFS monitoring */
   LOG_INFO_TAG("MSC", "Activated (SD %s)", SDMMC1_IsInitialized() ? "ready" : "not ready");
   /* USER CODE END USBD_STORAGE_Activate */
 
@@ -131,6 +114,7 @@ VOID USBD_STORAGE_Deactivate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Deactivate  */
   UX_PARAMETER_NOT_USED(storage_instance);
+  SD_SetMscActive(0);  /* Resume FatFS monitoring */
   /* USER CODE END USBD_STORAGE_Deactivate */
 
   return;
@@ -158,6 +142,18 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
 
   g_msc_read_count++;
 
+  /* Only allow MSC access when in MSC mode.
+   * In FatFS mode, report "no media" so host sees disk as ejected. */
+  if (!SD_IsMscAllowed())
+  {
+    if (media_status != UX_NULL)
+    {
+      /* Not Ready, Medium Not Present */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    return UX_ERROR;
+  }
+
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
@@ -169,25 +165,16 @@ UINT USBD_STORAGE_Read(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     return UX_ERROR;
   }
 
-  /* Read blocks from SD card */
-  if (HAL_SD_ReadBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
+  /* Notify activity for idle timeout detection */
+  SD_MscNotifyActivity();
+
+  /* Use SD adapter for read */
+  if (SD_Read(data_pointer, lba, number_blocks) != 0)
   {
     LOG_ERROR_TAG("MSC", "Read failed at LBA %lu", (unsigned long)lba);
     return UX_ERROR;
   }
 
-  /* Wait until transfer is complete - WITH TIMEOUT */
-  uint32_t wait_start = HAL_GetTick();
-  while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
-  {
-    if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
-    {
-      LOG_ERROR_TAG("MSC", "Read wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_ERROR;
-    }
-  }
-
-  /* ThreadX (RTOS) mode expects UX_SUCCESS for success */
   /* USER CODE END USBD_STORAGE_Read */
 
   return UX_SUCCESS;
@@ -215,6 +202,17 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
 
   g_msc_write_count++;
 
+  /* Only allow MSC access when in MSC mode. */
+  if (!SD_IsMscAllowed())
+  {
+    if (media_status != UX_NULL)
+    {
+      /* Not Ready, Medium Not Present */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    return UX_ERROR;
+  }
+
   /* Check if SD card is ready */
   if (check_sd_status() != 0)
   {
@@ -226,25 +224,16 @@ UINT USBD_STORAGE_Write(VOID *storage_instance, ULONG lun, UCHAR *data_pointer,
     return UX_ERROR;
   }
 
-  /* Write blocks to SD card */
-  if (HAL_SD_WriteBlocks(&hsd1, data_pointer, lba, number_blocks, SD_TIMEOUT) != HAL_OK)
+  /* Notify activity for idle timeout detection */
+  SD_MscNotifyActivity();
+
+  /* Use SD adapter for write (mark as MSC source) */
+  if (SD_Write(data_pointer, lba, number_blocks, SD_SOURCE_MSC) != 0)
   {
     LOG_ERROR_TAG("MSC", "Write failed at LBA %lu", (unsigned long)lba);
     return UX_ERROR;
   }
 
-  /* Wait until transfer is complete - WITH TIMEOUT */
-  uint32_t wait_start = HAL_GetTick();
-  while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
-  {
-    if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
-    {
-      LOG_ERROR_TAG("MSC", "Write wait timeout at LBA %lu", (unsigned long)lba);
-      return UX_ERROR;
-    }
-  }
-
-  /* ThreadX (RTOS) mode expects UX_SUCCESS for success */
   /* USER CODE END USBD_STORAGE_Write */
 
   return UX_SUCCESS;
@@ -299,22 +288,49 @@ UINT USBD_STORAGE_Status(VOID *storage_instance, ULONG lun, ULONG media_id,
   
   g_msc_status_count++;
   
-  /* Report actual SD card status to the host.
-   * We just check if initialized - card detection/init is done in main loop.
-   */
-  if (!SDMMC1_IsInitialized())
+  /* Check for media changed flag first - return UNIT ATTENTION once to tell host
+   * "something changed, re-query me". This is the SCSI mechanism for media removal.
+   * Sense Key 0x06 = UNIT ATTENTION, ASC 0x28 = NOT READY TO READY CHANGE */
+  if (SD_ConsumeMediaChanged())
   {
-    /* No SD card present - report NOT READY to host.
-     * CRITICAL: Return UX_ERROR here so TEST UNIT READY fails.
-     * This tells macOS "no media" and prevents the "initialize disk" dialog.
-     * The sense code provides the specific reason (Medium Not Present).
-     */
+    /* Don't log here - called from USBX thread, logging to CDC causes deadlock */
+    if (media_status != UX_NULL)
+    {
+      /* UNIT ATTENTION: Media may have changed - forces host to unmount */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x06, 0x28, 0x00);
+    }
+    status = UX_ERROR;
+  }
+  /* If host requested eject, report "no media" until mode changes */
+  else if (SD_IsEjected())
+  {
+    if (media_status != UX_NULL)
+    {
+      /* NOT READY: Medium Not Present */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    status = UX_ERROR;
+  }
+  /* In FatFS mode, report "no media" so host doesn't try to access disk */
+  else if (!SD_IsMscAllowed())
+  {
+    if (media_status != UX_NULL)
+    {
+      /* NOT READY: Medium Not Present */
+      *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
+    }
+    status = UX_ERROR;
+  }
+  /* Check if SD card is actually initialized */
+  else if (!SDMMC1_IsInitialized())
+  {
+    /* No SD card present - report NOT READY to host. */
     if (media_status != UX_NULL)
     {
       /* Not Ready (0x02), Medium Not Present (0x3A), No Qualifier (0x00) */
       *media_status = UX_DEVICE_CLASS_STORAGE_SENSE_STATUS(0x02, 0x3A, 0x00);
     }
-    status = UX_ERROR;  /* Tell host: TEST UNIT READY failed - no media */
+    status = UX_ERROR;
   }
   else
   {
@@ -349,37 +365,12 @@ UINT USBD_STORAGE_Notification(VOID *storage_instance, ULONG lun, ULONG media_id
   UX_PARAMETER_NOT_USED(storage_instance);
   UX_PARAMETER_NOT_USED(lun);
   UX_PARAMETER_NOT_USED(media_id);
+  UX_PARAMETER_NOT_USED(notification_class);
   
-  g_msc_notification_count++;
-  
-  /* Handle GET_EVENT_STATUS_NOTIFICATION - critical for macOS compatibility.
-   * Without this, macOS will reset the USB device after repeated polling failures.
-   */
-  if (notification_class == 0x10U) /* 0x10 = Media class notification */
-  {
-    /* Update media status in response buffer based on SD card presence */
-    if (SDMMC1_IsInitialized())
-    {
-      /* Media present */
-      msc_notification_response[4] = 0x00U; /* Media Event: No Change */
-      msc_notification_response[5] = 0x01U; /* Media Status: Present, door closed */
-    }
-    else
-    {
-      /* Media absent */
-      msc_notification_response[4] = 0x02U; /* Media Event: Media Absent */
-      msc_notification_response[5] = 0x02U; /* Media Status: Absent, door closed */
-    }
-    
-    *media_notification = msc_notification_response;
-    *media_notification_length = sizeof(msc_notification_response);
-  }
-  else
-  {
-    /* Unknown notification class - return empty response */
-    *media_notification = UX_NULL;
-    *media_notification_length = 0U;
-  }
+  /* Notification not needed - MSC and FatFS are mutually exclusive.
+   * Return empty response for all notification requests. */
+  *media_notification = UX_NULL;
+  *media_notification_length = 0U;
   /* USER CODE END USBD_STORAGE_Notification */
 
   return status;
@@ -445,5 +436,19 @@ ULONG USBD_STORAGE_GetMediaBlocklength(VOID)
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief  USBD_STORAGE_EjectNotify
+  *         Called by USBX when host sends START_STOP_UNIT with eject bit.
+  *         This is a weak function called from the modified ux_device_class_storage_start_stop.c
+  *         WARNING: This runs in USBX thread context - do NOT log or block here!
+  * @retval none
+  */
+void USBD_STORAGE_EjectNotify(void)
+{
+  /* Just set the flag - don't log from USBX callback context!
+   * Logging to CDC from the storage thread causes deadlock. */
+  SD_SetEjected();
+}
 
 /* USER CODE END 1 */

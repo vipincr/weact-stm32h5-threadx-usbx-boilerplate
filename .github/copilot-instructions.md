@@ -6,6 +6,8 @@
 - RTOS: ThreadX (Azure RTOS).
 - USB stack: USBX device (STM32 DCD).
 - USB composite device: CDC ACM (virtual UART for logging) + MSC (SD card).
+- JPEG processing: Converts Bayer RAW `.bin` files to JPEG on-device.
+- Exclusive SD access: Button-controlled switching between FatFS (local) and MSC (host) modes.
 
 ## Guardrails for generated code
 
@@ -29,6 +31,9 @@
 - FatFs configuration: [Core/Inc/ffconf.h](../Core/Inc/ffconf.h)
 - FatFs disk I/O: [Core/Src/sd_diskio.c](../Core/Src/sd_diskio.c)
 - Timing utility: [Core/Inc/time_it.h](../Core/Inc/time_it.h)
+- Button handler (FSM mode switching): [Core/Src/button_handler.c](../Core/Src/button_handler.c)
+- JPEG processor: [Core/Src/jpeg_processor.c](../Core/Src/jpeg_processor.c)
+- SD adapter (exclusive access): [Core/Src/sd_adapter.c](../Core/Src/sd_adapter.c)
 
 ## Logging subsystem
 
@@ -104,6 +109,48 @@ FS_Reader_SetChangeCallback(my_handler);
 - Toolchain: [cmake/gcc-arm-none-eabi.cmake](../cmake/gcc-arm-none-eabi.cmake).
 - Builder script: `./builder.sh build|flash|monitor|clean`
 
+## Exclusive SD access (FatFS ↔ MSC)
+
+FatFS and USB MSC cannot safely access the SD card simultaneously. The firmware uses exclusive mode switching:
+
+- **FatFS mode** (default): Firmware owns SD for JPEG encoding. MSC reports "no media".
+- **MSC mode**: Host owns SD via USB. FatFS unmounted.
+
+### Mode switching via button
+
+- **Double-click**: Toggle modes.
+- **Single-click**: Process `.bin` files (FatFS mode only).
+
+### Transition rules
+
+| From | To | Pre-condition | Action |
+|------|-----|---------------|--------|
+| FatFS | MSC | None | Unmount FatFS, enable MSC |
+| MSC | FatFS | Host ejected | Set FatFS mode, mount |
+| MSC | FatFS | Host NOT ejected | Stay MSC, log warning |
+
+### Key functions
+
+- `SD_GetMode()` / `SD_SetMode()` - Query/set current mode
+- `SD_IsEjected()` / `SD_SetEjected()` - Host eject detection
+- `SD_IsMscAllowed()` - Returns true only in MSC mode and not ejected
+- `USBD_STORAGE_EjectNotify()` - Called by modified USBX on SCSI eject command
+
+## JPEG processor
+
+Streaming JPEG encoder for Bayer RAW to JPEG conversion:
+
+```c
+#include "jpeg_processor.h"
+
+JPEG_Processor_Status_t status = JPEG_Processor_ConvertFile("/input.bin", NULL);
+// Output: /input.jpg
+```
+
+- Streaming architecture minimizes RAM usage
+- Configurable quality, white balance gains
+- Auto-generates output filename from input
+
 ## Typical task expectations
 
 - For USB composite updates, ensure both descriptor and class registration changes are made.
@@ -112,7 +159,9 @@ FS_Reader_SetChangeCallback(my_handler);
 - For logging, use `LOG_*_TAG()` macros - no special handling needed, the logger buffers until terminal connects.
 - For filesystem monitoring, use `FS_Reader_SetChangeCallback()` to register custom handlers.
 - Large structures (>1KB) should be static, not stack-allocated, to avoid ThreadX stack overflow.
-- FatFs and USB MSC can conflict - FatFs operations may fail when host is accessing SD via USB.
+- FatFs and USB MSC use **exclusive access** - check mode with `SD_GetMode()` before operations.
+- Button handler uses FSM - transitions are atomic and revert on error.
+- **Never log from USBX callback context** - causes deadlock. Set flags instead.
 
 ## Timing utility
 

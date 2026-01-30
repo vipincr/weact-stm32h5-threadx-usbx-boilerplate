@@ -78,14 +78,31 @@ UINT  _ux_device_class_storage_start_stop(UX_SLAVE_CLASS_STORAGE *storage, ULONG
                                             UX_SLAVE_ENDPOINT *endpoint_in,
                                             UX_SLAVE_ENDPOINT *endpoint_out, UCHAR * cbwcb)
 {
+UCHAR   start_stop_flags;
 
     UX_PARAMETER_NOT_USED(lun);
     UX_PARAMETER_NOT_USED(endpoint_in);
     UX_PARAMETER_NOT_USED(endpoint_out);
-    UX_PARAMETER_NOT_USED(cbwcb);
 
     /* If trace is enabled, insert this event into the trace buffer.  */
     UX_TRACE_IN_LINE_INSERT(UX_TRACE_DEVICE_CLASS_STORAGE_START_STOP, storage, lun, 0, 0, UX_TRACE_DEVICE_CLASS_EVENTS, 0, 0)
+
+    /* Extract the start/stop flags from byte 4 of the CDB.
+     * Bit 0 = Start (1=start, 0=stop)
+     * Bit 1 = LoEj (Load/Eject - 1=eject if Start=0)
+     */
+    start_stop_flags = *(cbwcb + UX_SLAVE_CLASS_STORAGE_START_STOP_START_BIT);
+    
+    /* Check for eject request: LoEj=1 and Start=0 means "eject media" */
+    if ((start_stop_flags & 0x02) && !(start_stop_flags & 0x01))
+    {
+        /* Host requested media eject - notify application via weak callback */
+        extern void USBD_STORAGE_EjectNotify(void) __attribute__((weak));
+        if (USBD_STORAGE_EjectNotify)
+        {
+            USBD_STORAGE_EjectNotify();
+        }
+    }
 
     /* We set the CSW with success.  */
     storage -> ux_slave_class_storage_csw_status = UX_SLAVE_CLASS_STORAGE_CSW_PASSED;

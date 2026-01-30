@@ -79,6 +79,13 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   (void)memory_ptr;
   /* USER CODE END App_ThreadX_MEM_POOL */
   /* USER CODE BEGIN App_ThreadX_Init */
+  
+  /* NOTE: This function runs BEFORE the ThreadX scheduler starts.
+   * Do NOT use tx_thread_sleep() or other blocking calls here.
+   * Only create threads/queues - they will start after tx_kernel_enter().
+   */
+  
+  /* Phase 1: Initialize Logger (for buffered log output) */
   Logger_Init();
   
   /* Create thread to flush buffered logs after boot */
@@ -87,14 +94,23 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                    logger_flush_thread_stack, sizeof(logger_flush_thread_stack),
                    25, 25, TX_NO_TIME_SLICE, TX_AUTO_START);
 
-  /* Initialize button handler thread */
+  /* Phase 2: Initialize JPEG processor FIRST (button handler depends on it) */
+  JPEG_Processor_Status_t jpeg_status = JPEG_Processor_Init();
+  if (jpeg_status != JPEG_PROC_OK)
+  {
+    LOG_ERROR_TAG("BOOT", "JPEG processor init failed: %d", (int)jpeg_status);
+  }
+  else
+  {
+    LOG_INFO_TAG("BOOT", "JPEG processor ready");
+  }
+
+  /* Phase 3: Initialize button handler (uses JPEG processor) */
   ButtonHandler_Init(UX_NULL);
 
-  /* Initialize filesystem reader thread (FatFs + exFAT) */
+  /* Phase 4: Initialize filesystem reader (requires SD card) */
   FS_Reader_Init(UX_NULL);
 
-  /* Initialize JPEG processor (watches for .bin files and converts to JPEG) */
-  JPEG_Processor_Init();
   /* USER CODE END App_ThreadX_Init */
 
   return ret;

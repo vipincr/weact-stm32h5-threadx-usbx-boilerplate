@@ -1,9 +1,11 @@
-# STM32H5 USB Composite (ThreadX + USBX)
+# STM32H5 JPEG Processor (ThreadX + USBX)
 
-This repository targets the WeAct STM32H5 Core board (STM32H562RGT6) and is structured as an Azure RTOS (ThreadX) + USBX firmware project exposing a **USB composite device**:
+This repository targets the WeAct STM32H5 Core board (STM32H562RGT6) and is structured as an Azure RTOS (ThreadX) + USBX firmware project with:
 
-- **USB CDC ACM**: virtual UART over USB for logging.
+- **JPEG encoding**: Converts Bayer RAW `.bin` files to JPEG on-device.
+- **USB CDC ACM**: Virtual UART over USB for logging.
 - **USB Mass Storage**: SD card (SDMMC1) read/write over USB.
+- **Exclusive mode switching**: Toggle between FatFS (local processing) and MSC (host access) modes via button.
 
 Board reference: https://github.com/WeActStudio/WeActStudio.STM32H5_64Pin_CoreBoard
 
@@ -73,7 +75,7 @@ Defined in [Core/Src/sdmmc.c](Core/Src/sdmmc.c).
 - Multi-partition support for GPT-formatted SD cards (`FF_MULTI_PARTITION = 1`).
 - 64-bit LBA for large drives (`FF_LBA64 = 1`).
 - ThreadX reentrant configuration (`FF_FS_REENTRANT = 1`).
-- Read-only mode (`FF_FS_READONLY = 1`) - firmware only monitors, doesn't write.
+- Read-write mode for JPEG output (`FF_FS_READONLY = 0`).
 
 Configuration in [Core/Inc/ffconf.h](Core/Inc/ffconf.h), disk I/O in [Core/Src/sd_diskio.c](Core/Src/sd_diskio.c).
 
@@ -123,6 +125,45 @@ Implementation: [Core/Src/led_status.c](Core/Src/led_status.c) and CDC line-stat
 - MSC class is only registered if an SD card is detected at boot.
 - If no SD card is present, the device enumerates as CDC-only.
 - Hot-plug of SD cards is not currently supported.
+
+### Exclusive access mode (FatFS ↔ MSC)
+
+FatFS and USB MSC cannot safely access the SD card simultaneously. The firmware implements exclusive access via a state machine:
+
+**Modes:**
+- **FatFS mode** (default): Firmware owns the SD card for JPEG encoding. MSC reports "no media" to host.
+- **MSC mode**: Host owns the SD card via USB. FatFS is unmounted.
+
+**Button controls:**
+- **Double-click**: Toggle between FatFS and MSC modes.
+- **Single-click**: Process all `.bin` files → JPEG (only in FatFS mode).
+
+**Mode switching rules:**
+- FatFS → MSC: Always succeeds. FatFS unmounts, MSC becomes active.
+- MSC → FatFS: Requires host to **eject** the disk first (Finder → Eject). If not ejected, stays in MSC mode with a warning.
+
+**SCSI eject detection**: The firmware detects macOS Finder eject via SCSI START_STOP_UNIT command and sets an "ejected" flag. This enables clean transition to FatFS mode.
+
+Implementation: [Core/Src/button_handler.c](Core/Src/button_handler.c) and [Core/Src/sd_adapter.c](Core/Src/sd_adapter.c).
+
+### JPEG processor
+
+The firmware includes a streaming JPEG encoder that converts Bayer RAW `.bin` files to JPEG:
+
+- **Streaming architecture**: Processes files in chunks to minimize RAM usage.
+- **Bayer demosaicing**: Converts RAW Bayer CFA data to RGB.
+- **Auto white balance**: Configurable RGB gains for color correction.
+- **Quality settings**: Adjustable JPEG quality (default: 85).
+- **Output format**: Standard JPEG files written alongside input `.bin` files.
+
+**Usage:**
+1. Copy `.bin` files to SD card via USB MSC mode.
+2. Eject disk from Finder.
+3. Double-click button to switch to FatFS mode.
+4. Single-click to process all `.bin` files.
+5. Double-click to return to MSC mode and retrieve `.jpg` files.
+
+Implementation: [Core/Src/jpeg_processor.c](Core/Src/jpeg_processor.c) and [Core/Inc/jpeg_processor.h](Core/Inc/jpeg_processor.h).
 
 ### Filesystem monitoring
 

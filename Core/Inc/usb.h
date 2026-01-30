@@ -42,6 +42,12 @@ void MX_USB_PCD_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
+/**
+  * @brief  Trigger USB bus disconnect and reconnect.
+  *         Forces host to re-enumerate, causing unmount/remount.
+  */
+void USB_ForceReconnect(void);
+
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

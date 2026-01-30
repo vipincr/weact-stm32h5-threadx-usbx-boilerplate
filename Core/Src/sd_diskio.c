@@ -12,11 +12,10 @@
 #include "ff.h"
 #include "diskio.h"
 #include "sdmmc.h"
-#include "logger.h"
+#include "sd_adapter.h"
 #include <string.h>
 
 /* Private defines -----------------------------------------------------------*/
-#define SD_TIMEOUT      1000U
 #define SD_DEFAULT_BLOCK_SIZE   512U
 
 /*-----------------------------------------------------------------------*/
@@ -74,9 +73,6 @@ DSTATUS disk_initialize(BYTE pdrv)
 /*-----------------------------------------------------------------------*/
 DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 {
-    DRESULT res = RES_ERROR;
-    HAL_StatusTypeDef hal_status;
-
     if (pdrv != 0 || count == 0)
     {
         return RES_PARERR;
@@ -87,27 +83,13 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
         return RES_NOTRDY;
     }
 
-    /* Read blocks from SD card */
-    hal_status = HAL_SD_ReadBlocks(&hsd1, buff, (uint32_t)sector, count, SD_TIMEOUT);
-    
-    if (hal_status == HAL_OK)
+    /* Use SD adapter for read */
+    if (SD_Read(buff, (uint32_t)sector, count) == 0)
     {
-        /* Wait until transfer is complete */
-        uint32_t wait_start = HAL_GetTick();
-        while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
-        {
-            if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
-            {
-                /* Timeout expected during MSC/FatFs contention - don't log */
-                return RES_ERROR;
-            }
-        }
-        
-        res = RES_OK;
+        return RES_OK;
     }
-    /* Note: Read errors are expected during MSC/FatFs contention - don't log them */
 
-    return res;
+    return RES_ERROR;
 }
 
 /*-----------------------------------------------------------------------*/
@@ -117,8 +99,6 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count)
 
 DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
 {
-    DRESULT res = RES_ERROR;
-
     if (pdrv != 0 || count == 0)
     {
         return RES_PARERR;
@@ -129,22 +109,13 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count)
         return RES_NOTRDY;
     }
 
-    /* Write blocks to SD card */
-    if (HAL_SD_WriteBlocks(&hsd1, (uint8_t *)buff, (uint32_t)sector, count, SD_TIMEOUT) == HAL_OK)
+    /* Use SD adapter for write (mark as FatFS source) */
+    if (SD_Write(buff, (uint32_t)sector, count, SD_SOURCE_FATFS) == 0)
     {
-        /* Wait until transfer is complete */
-        uint32_t wait_start = HAL_GetTick();
-        while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
-        {
-            if ((HAL_GetTick() - wait_start) > SD_TIMEOUT)
-            {
-                return RES_ERROR;
-            }
-        }
-        res = RES_OK;
+        return RES_OK;
     }
 
-    return res;
+    return RES_ERROR;
 }
 
 #endif /* FF_FS_READONLY == 0 */

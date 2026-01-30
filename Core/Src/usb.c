@@ -144,4 +144,20 @@ volatile uint16_t g_usb_last_wValue = 0U;
 volatile uint16_t g_usb_last_wIndex = 0U;
 volatile uint16_t g_usb_last_wLength = 0U;
 
+/**
+  * @brief  Force USB disconnect and reconnect.
+  *         This causes the host to see a device removal and re-enumeration.
+  */
+void USB_ForceReconnect(void)
+{
+    /* Stop USB - host sees device disconnected */
+    HAL_PCD_Stop(&hpcd_USB_DRD_FS);
+    
+    /* Brief delay for host to detect disconnect (100ms) */
+    HAL_Delay(100U);
+    
+    /* Start USB - host sees new device and re-enumerates */
+    HAL_PCD_Start(&hpcd_USB_DRD_FS);
+}
+
 /* USER CODE END 1 */
