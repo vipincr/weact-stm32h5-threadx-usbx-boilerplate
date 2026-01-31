@@ -310,6 +310,10 @@ static inline int ob_adjust(uint16_t v, bool subtract_ob, uint16_t ob)
 /* Macro version of ob_adjust for inlining in hot paths */
 #define OB_ADJ(v, sub, ob) ((sub) ? (((v) > (ob)) ? ((int)(v) - (int)(ob)) : 0) : (int)(v))
 
+/* FAST macro for inner loop when subtract_ob is known to be false at compile time.
+ * Eliminates the conditional entirely - just casts to int. */
+#define OB_ADJ_FAST(v) ((int)(v))
+
 /* Combined gain+shift for demosaic: (val * gain_fix) >> (8 + shift_down) 
  * Pre-compute combined_shift = 8 + shift_down at loop start */
 #define APPLY_GAIN_SHIFT(val, gain, combined_shift) (((val) * (gain)) >> (combined_shift))
@@ -1086,20 +1090,21 @@ static void demosaic_row_bilinear_to_yuv422_fast(
             const uint16_t *prev = &row_prev[x];
             const uint16_t *next = &row_next[x];
             
-            const int c_m1 = OB_ADJ(curr[-1], subtract_ob, ob_value);
-            const int c_0  = OB_ADJ(curr[0],  subtract_ob, ob_value);
-            const int c_1  = OB_ADJ(curr[1],  subtract_ob, ob_value);
-            const int c_2  = OB_ADJ(curr[2],  subtract_ob, ob_value);
+            /* OB_ADJ_FAST: subtract_ob is always false in this fast path */
+            const int c_m1 = OB_ADJ_FAST(curr[-1]);
+            const int c_0  = OB_ADJ_FAST(curr[0]);
+            const int c_1  = OB_ADJ_FAST(curr[1]);
+            const int c_2  = OB_ADJ_FAST(curr[2]);
             
-            const int p_m1 = OB_ADJ(prev[-1], subtract_ob, ob_value);
-            const int p_0  = OB_ADJ(prev[0],  subtract_ob, ob_value);
-            const int p_1  = OB_ADJ(prev[1],  subtract_ob, ob_value);
-            const int p_2  = OB_ADJ(prev[2],  subtract_ob, ob_value);
+            const int p_m1 = OB_ADJ_FAST(prev[-1]);
+            const int p_0  = OB_ADJ_FAST(prev[0]);
+            const int p_1  = OB_ADJ_FAST(prev[1]);
+            const int p_2  = OB_ADJ_FAST(prev[2]);
             
-            const int n_m1 = OB_ADJ(next[-1], subtract_ob, ob_value);
-            const int n_0  = OB_ADJ(next[0],  subtract_ob, ob_value);
-            const int n_1  = OB_ADJ(next[1],  subtract_ob, ob_value);
-            const int n_2  = OB_ADJ(next[2],  subtract_ob, ob_value);
+            const int n_m1 = OB_ADJ_FAST(next[-1]);
+            const int n_0  = OB_ADJ_FAST(next[0]);
+            const int n_1  = OB_ADJ_FAST(next[1]);
+            const int n_2  = OB_ADJ_FAST(next[2]);
             
             int r0, g0, b0, r1, g1, b1;
             
