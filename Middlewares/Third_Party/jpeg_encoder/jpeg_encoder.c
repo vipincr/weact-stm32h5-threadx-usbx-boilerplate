@@ -1068,112 +1068,98 @@ static void demosaic_row_bilinear_to_yuv422_fast(
     }
     
     /* --- MAIN LOOP: Middle pixels (x=2 to width-4) - NO edge checks --- */
-    /* OPTIMIZED: Unrolled two-pixel processing, precomputed pattern values */
+    /* OPTIMIZED: 2-pixel processing with pointer-based access */
     if (have_full_rows)
     {
-        const int x_end = (width - 2) & ~1;  /* Round down to even, leave last pair for edge handling */
-        const int color0 = color_lut_row[0];  /* Color at even x positions */
-        const int color1 = color_lut_row[1];  /* Color at odd x positions */
-        const int combined_shift = 8 + shift_down;  /* Combined gain+normalize shift */
+        const int x_end = (width - 2) & ~1;  /* Round down to even */
+        const int color0 = color_lut_row[0];
+        const int color1 = color_lut_row[1];
+        const int combined_shift = 8 + shift_down;
+        
+        /* Pointer-based output to avoid index multiply */
+        uint8_t *out_ptr = &yuv_out[x * 2];
         
         for (; x < x_end; x += 2)
         {
-            int r0, g0, b0;
-            int r1, g1, b1;
+            /* Pointer-based input access */
+            const uint16_t *curr = &row_curr[x];
+            const uint16_t *prev = &row_prev[x];
+            const uint16_t *next = &row_next[x];
             
-            /* Load current row values once */
-            const int c_m1 = OB_ADJ(row_curr[x-1], subtract_ob, ob_value);
-            const int c_0  = OB_ADJ(row_curr[x],   subtract_ob, ob_value);
-            const int c_p1 = OB_ADJ(row_curr[x+1], subtract_ob, ob_value);
-            const int c_p2 = OB_ADJ(row_curr[x+2], subtract_ob, ob_value);
+            const int c_m1 = OB_ADJ(curr[-1], subtract_ob, ob_value);
+            const int c_0  = OB_ADJ(curr[0],  subtract_ob, ob_value);
+            const int c_1  = OB_ADJ(curr[1],  subtract_ob, ob_value);
+            const int c_2  = OB_ADJ(curr[2],  subtract_ob, ob_value);
             
-            /* Load prev row values */
-            const int p_m1 = OB_ADJ(row_prev[x-1], subtract_ob, ob_value);
-            const int p_0  = OB_ADJ(row_prev[x],   subtract_ob, ob_value);
-            const int p_p1 = OB_ADJ(row_prev[x+1], subtract_ob, ob_value);
-            const int p_p2 = OB_ADJ(row_prev[x+2], subtract_ob, ob_value);
+            const int p_m1 = OB_ADJ(prev[-1], subtract_ob, ob_value);
+            const int p_0  = OB_ADJ(prev[0],  subtract_ob, ob_value);
+            const int p_1  = OB_ADJ(prev[1],  subtract_ob, ob_value);
+            const int p_2  = OB_ADJ(prev[2],  subtract_ob, ob_value);
             
-            /* Load next row values */
-            const int n_m1 = OB_ADJ(row_next[x-1], subtract_ob, ob_value);
-            const int n_0  = OB_ADJ(row_next[x],   subtract_ob, ob_value);
-            const int n_p1 = OB_ADJ(row_next[x+1], subtract_ob, ob_value);
-            const int n_p2 = OB_ADJ(row_next[x+2], subtract_ob, ob_value);
+            const int n_m1 = OB_ADJ(next[-1], subtract_ob, ob_value);
+            const int n_0  = OB_ADJ(next[0],  subtract_ob, ob_value);
+            const int n_1  = OB_ADJ(next[1],  subtract_ob, ob_value);
+            const int n_2  = OB_ADJ(next[2],  subtract_ob, ob_value);
             
-            /* --- Pixel 0 at position x (even, uses color0) --- */
+            int r0, g0, b0, r1, g1, b1;
+            
+            /* Pixel 0 (even position) */
             {
-                const int h_sum = c_m1 + c_p1;  /* horizontal neighbors */
-                const int v_sum = p_0 + n_0;    /* vertical neighbors */
-                
-                if (color0 == 1) {  /* Green pixel */
+                const int h_sum = c_m1 + c_1;
+                const int v_sum = p_0 + n_0;
+                if (color0 == 1) {
+                    g0 = c_0;
                     if (row_has_red) { r0 = h_sum >> 1; b0 = v_sum >> 1; }
                     else             { b0 = h_sum >> 1; r0 = v_sum >> 1; }
-                    g0 = c_0;
-                } else if (color0 == 0) {  /* Red pixel */
-                    r0 = c_0;
-                    g0 = (h_sum + v_sum) >> 2;
-                    b0 = (p_m1 + p_p1 + n_m1 + n_p1) >> 2;  /* diagonal */
-                } else {  /* Blue pixel */
-                    b0 = c_0;
-                    g0 = (h_sum + v_sum) >> 2;
-                    r0 = (p_m1 + p_p1 + n_m1 + n_p1) >> 2;  /* diagonal */
+                } else if (color0 == 0) {
+                    r0 = c_0; g0 = (h_sum + v_sum) >> 2; b0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
+                } else {
+                    b0 = c_0; g0 = (h_sum + v_sum) >> 2; r0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
                 }
             }
             
-            /* --- Pixel 1 at position x+1 (odd, uses color1) --- */
+            /* Pixel 1 (odd position) */
             {
-                const int h_sum = c_0 + c_p2;   /* horizontal neighbors: curr[x], curr[x+2] */
-                const int v_sum = p_p1 + n_p1;  /* vertical neighbors: prev[x+1], next[x+1] */
-                
-                if (color1 == 1) {  /* Green pixel */
+                const int h_sum = c_0 + c_2;
+                const int v_sum = p_1 + n_1;
+                if (color1 == 1) {
+                    g1 = c_1;
                     if (row_has_red) { r1 = h_sum >> 1; b1 = v_sum >> 1; }
                     else             { b1 = h_sum >> 1; r1 = v_sum >> 1; }
-                    g1 = c_p1;
-                } else if (color1 == 0) {  /* Red pixel */
-                    r1 = c_p1;
-                    g1 = (h_sum + v_sum) >> 2;
-                    b1 = (p_0 + p_p2 + n_0 + n_p2) >> 2;  /* diagonal */
-                } else {  /* Blue pixel */
-                    b1 = c_p1;
-                    g1 = (h_sum + v_sum) >> 2;
-                    r1 = (p_0 + p_p2 + n_0 + n_p2) >> 2;  /* diagonal */
+                } else if (color1 == 0) {
+                    r1 = c_1; g1 = (h_sum + v_sum) >> 2; b1 = (p_0 + p_2 + n_0 + n_2) >> 2;
+                } else {
+                    b1 = c_1; g1 = (h_sum + v_sum) >> 2; r1 = (p_0 + p_2 + n_0 + n_2) >> 2;
                 }
             }
             
-            /* Apply gains with combined shift */
+            /* Apply gains */
             int r0_i = APPLY_GAIN_SHIFT(r0, r_gain_fix, combined_shift);
             int g0_i = APPLY_GAIN_SHIFT(g0, s_g_gain_fix, combined_shift);
             int b0_i = APPLY_GAIN_SHIFT(b0, b_gain_fix, combined_shift);
             int r1_i = APPLY_GAIN_SHIFT(r1, r_gain_fix, combined_shift);
             int g1_i = APPLY_GAIN_SHIFT(g1, s_g_gain_fix, combined_shift);
             int b1_i = APPLY_GAIN_SHIFT(b1, b_gain_fix, combined_shift);
-            
             CLAMP_SAT(r0_i); CLAMP_SAT(g0_i); CLAMP_SAT(b0_i);
             CLAMP_SAT(r1_i); CLAMP_SAT(g1_i); CLAMP_SAT(b1_i);
             
+            /* YUV conversion with merged Cb/Cr averaging */
             int rg0 = JPEG_ENC_PACK16(r0_i, g0_i);
             int rg1 = JPEG_ENC_PACK16(r1_i, g1_i);
-            
             int y0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_Y_RG, b0_i * JPEG_ENC_COEF_Y_B) >> 12;
             int y1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_Y_RG, b1_i * JPEG_ENC_COEF_Y_B) >> 12;
-            int cb0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CB_RG, b0_i << 11) >> 12;
-            int cr0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CR_RG, b0_i * JPEG_ENC_COEF_CR_B) >> 12;
-            int cb1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CB_RG, b1_i << 11) >> 12;
-            int cr1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CR_RG, b1_i * JPEG_ENC_COEF_CR_B) >> 12;
-            
-            int cb = ((cb0 + cb1) >> 1) + 128;
-            int cr = ((cr0 + cr1) >> 1) + 128;
-            cb = clamp_u8(cb);
-            cr = clamp_u8(cr);
-            
+            int cb = ((JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CB_RG, b0_i << 11) +
+                       JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CB_RG, b1_i << 11)) >> 13) + 128;
+            int cr = ((JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CR_RG, b0_i * JPEG_ENC_COEF_CR_B) +
+                       JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CR_RG, b1_i * JPEG_ENC_COEF_CR_B)) >> 13) + 128;
             CLAMP_SAT(y0); CLAMP_SAT(y1);
-            y0 = s_y_lut[y0];
-            y1 = s_y_lut[y1];
             
-            int out_idx = x * 2;
-            yuv_out[out_idx + 0] = (uint8_t)y0;
-            yuv_out[out_idx + 1] = (uint8_t)cb;
-            yuv_out[out_idx + 2] = (uint8_t)y1;
-            yuv_out[out_idx + 3] = (uint8_t)cr;
+            /* Pointer-based output */
+            out_ptr[0] = s_y_lut[y0];
+            out_ptr[1] = (uint8_t)clamp_u8(cb);
+            out_ptr[2] = s_y_lut[y1];
+            out_ptr[3] = (uint8_t)clamp_u8(cr);
+            out_ptr += 4;
         }
     }
     
