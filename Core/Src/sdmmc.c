@@ -26,30 +26,59 @@
 
 SD_HandleTypeDef hsd1;
 
+/* Private variable - declared here so MX_SDMMC1_SD_Init can use it */
+static uint8_t sd_initialized = 0U;
+
 /* SDMMC1 init function */
 
 void MX_SDMMC1_SD_Init(void)
 {
 
   /* USER CODE BEGIN SDMMC1_Init 0 */
-
+  sd_initialized = 0U;  /* Reset state */
+  
+  /* Reset SDMMC peripheral - critical after MCU reset.
+   * The SD card doesn't see a power cycle, only the MCU does,
+   * so the peripheral may be in an undefined state. */
+  __HAL_RCC_SDMMC1_FORCE_RESET();
+  HAL_Delay(2);
+  __HAL_RCC_SDMMC1_RELEASE_RESET();
+  HAL_Delay(10);  /* Allow peripheral and card to stabilize */
   /* USER CODE END SDMMC1_Init 0 */
 
   /* USER CODE BEGIN SDMMC1_Init 1 */
-
+  /* SD cards MUST start in 1-bit mode, then switch to 4-bit */
   /* USER CODE END SDMMC1_Init 1 */
   hsd1.Instance = SDMMC1;
   hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
   hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
-  hsd1.Init.BusWide = SDMMC_BUS_WIDE_4B;
+  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;  /* Start with 1-bit! */
   hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
   hsd1.Init.ClockDiv = 8;
   if (HAL_SD_Init(&hsd1) != HAL_OK)
   {
-    Error_Handler();
+    /* SD card not present or init failed - continue without SD */
+    return;
   }
   /* USER CODE BEGIN SDMMC1_Init 2 */
-
+  /* Switch to 4-bit mode for performance */
+  HAL_Delay(10);
+  if (HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B) != HAL_OK)
+  {
+    /* 4-bit failed, continue with 1-bit (slower but works) */
+  }
+  /* Wait for card to be ready */
+  uint32_t timeout = HAL_GetTick() + 500U;
+  while (HAL_SD_GetCardState(&hsd1) != HAL_SD_CARD_TRANSFER)
+  {
+    if (HAL_GetTick() > timeout)
+    {
+      /* Card not ready - continue without SD */
+      return;
+    }
+    HAL_Delay(1);
+  }
+  sd_initialized = 1U;
   /* USER CODE END SDMMC1_Init 2 */
 
 }
@@ -150,163 +179,28 @@ void HAL_SD_MspDeInit(SD_HandleTypeDef* sdHandle)
 
 /* USER CODE BEGIN 1 */
 
-static uint8_t sd_initialized = 0U;
-static uint8_t msc_enabled = 0U;  /* Whether MSC class should be active */
-
-/* MSC enable control - called before USB init based on SD detection */
-void USBD_MSC_SetEnabled(int enabled)
-{
-  msc_enabled = (enabled != 0) ? 1U : 0U;
-}
-
-int USBD_MSC_IsEnabled(void)
-{
-  return (msc_enabled != 0U) ? 1 : 0;
-}
-
-/**
-  * @brief  Reset SD state to allow re-initialization.
-  *         Call this when card is removed to allow detecting a new card.
-  */
-void SDMMC1_ResetState(void)
-{
-  if (sd_initialized != 0U)
-  {
-    LOG_INFO_TAG("SD", "SD card removed - resetting state");
-    HAL_SD_DeInit(&hsd1);
-  }
-  sd_initialized = 0U;
-}
-
-/**
-  * @brief  Check if SD card is currently present and accessible.
-  *         This is a quick check that doesn't do full init.
-  * @retval 1 if card is present and ready, 0 otherwise
-  */
-int SDMMC1_IsCardPresent(void)
-{
-  if (sd_initialized == 0U)
-  {
-    return 0;
-  }
-  
-  /* Check if card is still responding */
-  HAL_SD_CardStateTypeDef state = HAL_SD_GetCardState(&hsd1);
-  if (state == HAL_SD_CARD_ERROR)
-  {
-    /* Card was removed or has error - reset state */
-    SDMMC1_ResetState();
-    return 0;
-  }
-  
-  return 1;
-}
-
-/**
-  * @brief  Periodic check for SD card insertion/removal.
-  *         Call this from main loop to support hot-plug.
-  *         Rate-limited to avoid excessive polling.
-  */
-void SDMMC1_PollCardPresence(void)
-{
-  /* Hot-plug SD card detection is currently disabled.
-   * HAL_SD_Init() is a blocking call that can take 100s of ms,
-   * which causes USB to stall and host disconnects.
-   * 
-   * For now, SD card must be present at boot.
-   * TODO: Implement non-blocking SD detection or use a separate task.
-   */
-  (void)0;  /* Suppress unused warning */
-}
-
-/**
-  * @brief  Quick SD card detection without full init.
-  *         Tries to init SD just enough to detect presence,
-  *         then sets the init state for later use.
-  * @retval 1 if SD card is present, 0 otherwise
-  */
-int SDMMC1_QuickDetect(void)
-{
-  /* If already initialized, we know card is present */
-  if (sd_initialized != 0U)
-  {
-    return 1;
-  }
-  
-  /* Try a quick init - if it works, card is present */
-  /* Note: This will fully init if successful */
-  if (SDMMC1_SafeInit() == 0)
-  {
-    return 1;
-  }
-  
-  return 0;
-}
-
-/* Internal init function with optional logging */
-static int SDMMC1_DoInit(int quiet)
-{
-  /* Already initialized successfully */
-  if (sd_initialized != 0U)
-  {
-    return 0;
-  }
-
-  if (!quiet)
-  {
-    LOG_INFO_TAG("SD", "Initializing SD card...");
-  }
-
-  /* IMPORTANT: SD cards MUST start in 1-bit mode, then switch to 4-bit */
-  hsd1.Instance = SDMMC1;
-  hsd1.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING;
-  hsd1.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE;
-  hsd1.Init.BusWide = SDMMC_BUS_WIDE_1B;  /* Start with 1-bit */
-  hsd1.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_ENABLE;
-  hsd1.Init.ClockDiv = 8;
-
-  if (HAL_SD_Init(&hsd1) != HAL_OK)
-  {
-    if (!quiet)
-    {
-      LOG_ERROR_TAG("SD", "HAL_SD_Init failed (no card?)");
-    }
-    /* Don't set sd_init_failed - allow retry for hot-plug */
-    return -1;
-  }
-
-  /* Now switch to 4-bit mode for better performance */
-  (void)HAL_SD_ConfigWideBusOperation(&hsd1, SDMMC_BUS_WIDE_4B);
-
-  /* Get card info for logging */
-  HAL_SD_CardInfoTypeDef cardInfo;
-  if (HAL_SD_GetCardInfo(&hsd1, &cardInfo) == HAL_OK)
-  {
-    uint32_t sizeMB = (uint32_t)((uint64_t)cardInfo.BlockNbr * cardInfo.BlockSize / 1048576ULL);
-    LOG_INFO_TAG("SD", "Card ready: %lu MB", (unsigned long)sizeMB);
-  }
-  else
-  {
-    LOG_INFO_TAG("SD", "Card ready");
-  }
-
-  sd_initialized = 1U;
-  return 0;
-}
-
-int SDMMC1_SafeInit(void)
-{
-  return SDMMC1_DoInit(0);  /* With logging */
-}
-
-int SDMMC1_SafeInitQuiet(void)
-{
-  return SDMMC1_DoInit(1);  /* Without logging */
-}
+/* sd_initialized is now declared above MX_SDMMC1_SD_Init */
 
 int SDMMC1_IsInitialized(void)
 {
   return (sd_initialized != 0U) ? 1 : 0;
+}
+
+/**
+  * @brief  Safe SD card initialization (called by FatFs if needed).
+  *         Only initializes if not already done.
+  * @retval 0 on success, -1 on error
+  */
+int SDMMC1_SafeInit(void)
+{
+  if (sd_initialized != 0U)
+  {
+    return 0;  /* Already initialized */
+  }
+  
+  /* Re-initialize (should already be done in main.c) */
+  MX_SDMMC1_SD_Init();
+  return SDMMC1_IsInitialized() ? 0 : -1;
 }
 
 /* USER CODE END 1 */

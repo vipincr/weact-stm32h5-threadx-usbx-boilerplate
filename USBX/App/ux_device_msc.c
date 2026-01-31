@@ -97,8 +97,8 @@ VOID USBD_STORAGE_Activate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Activate */
   UX_PARAMETER_NOT_USED(storage_instance);
-  SD_SetMscActive(1);  /* Pause FatFS monitoring */
-  LOG_INFO_TAG("MSC", "Activated (SD %s)", SDMMC1_IsInitialized() ? "ready" : "not ready");
+  /* MSC activation is now controlled by button state machine.
+   * Don't log here - this is only called if MSC class is registered. */
   /* USER CODE END USBD_STORAGE_Activate */
 
   return;
@@ -114,7 +114,7 @@ VOID USBD_STORAGE_Deactivate(VOID *storage_instance)
 {
   /* USER CODE BEGIN USBD_STORAGE_Deactivate  */
   UX_PARAMETER_NOT_USED(storage_instance);
-  SD_SetMscActive(0);  /* Resume FatFS monitoring */
+  /* MSC deactivation is now controlled by button state machine. */
   /* USER CODE END USBD_STORAGE_Deactivate */
 
   return;

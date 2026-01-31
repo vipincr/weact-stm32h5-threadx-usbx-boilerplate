@@ -11,6 +11,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "jpeg_processor.h"
 #include "jpeg_encoder.h"
+#include "jpeg_encoder_timing.h"
 #include "ff.h"
 #include "fs_reader.h"
 #include "logger.h"
@@ -193,8 +194,8 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
     enc_config.awb_r_gain = JPEG_DEMOSAIC_RED_GAIN;
     enc_config.awb_g_gain = JPEG_DEMOSAIC_GREEN_GAIN;
     enc_config.awb_b_gain = JPEG_DEMOSAIC_BLUE_GAIN;
-    enc_config.enable_fast_mode = config->enable_fast_mode ? true : false;
-    enc_config.subsample = JPEG_SUBSAMPLE_420;  /* Good compression/quality balance */
+    enc_config.enable_fast_mode = true;  /* Always use fast mode for performance */
+    enc_config.subsample = JPEG_SUBSAMPLE_422;  /* 4:2:2 - faster than 4:2:0, better quality */
     
     /* Check memory requirements before encoding */
     size_t mem_req = jpeg_encoder_estimate_memory_requirement(&enc_config);
@@ -235,6 +236,38 @@ JPEG_Processor_Status_t JPEG_Processor_ConvertFile(const char *bin_path,
     LOG_INFO_TAG(JPEG_PROC_TAG, "Encoded: %s (%lu bytes, %lu.%lux, %lu ms)",
                  jpg_path, (unsigned long)stream_ctx.bytes_written, 
                  ratio_x10 / 10UL, ratio_x10 % 10UL, (unsigned long)elapsed_ms);
+    
+#if JPEG_TIMING_ENABLED
+    /* Log detailed timing breakdown */
+    {
+        uint32_t total_ms = JPEG_TIMING_TO_MS(JPEG_TIMING_TOTAL_CYCLES());
+        uint32_t read_ms = JPEG_TIMING_TO_MS(JPEG_TIMING_CYCLES(JPEG_TIMING_RAW_READ));
+        uint32_t unpack_ms = JPEG_TIMING_TO_MS(JPEG_TIMING_CYCLES(JPEG_TIMING_UNPACK));
+        uint32_t demosaic_ms = JPEG_TIMING_TO_MS(JPEG_TIMING_CYCLES(JPEG_TIMING_DEMOSAIC));
+        uint32_t mcu_ms = JPEG_TIMING_TO_MS(JPEG_TIMING_CYCLES(JPEG_TIMING_MCU_PREPARE));
+        
+        LOG_INFO_TAG(JPEG_PROC_TAG, "Timing: Total=%lums Read=%lums Unpack=%lums Demosaic=%lums MCU=%lums",
+                     (unsigned long)total_ms, (unsigned long)read_ms, 
+                     (unsigned long)unpack_ms, (unsigned long)demosaic_ms, 
+                     (unsigned long)mcu_ms);
+        
+        /* Calculate percentages (x10 for one decimal place) */
+        if (total_ms > 0) {
+            uint32_t read_pct = (read_ms * 1000) / total_ms;
+            uint32_t unpack_pct = (unpack_ms * 1000) / total_ms;
+            uint32_t demosaic_pct = (demosaic_ms * 1000) / total_ms;
+            uint32_t mcu_pct = (mcu_ms * 1000) / total_ms;
+            uint32_t other_pct = 1000 - read_pct - unpack_pct - demosaic_pct - mcu_pct;
+            
+            LOG_INFO_TAG(JPEG_PROC_TAG, "Breakdown: Read=%lu.%lu%% Unpack=%lu.%lu%% Demosaic=%lu.%lu%% MCU=%lu.%lu%% Other=%lu.%lu%%",
+                         read_pct/10, read_pct%10,
+                         unpack_pct/10, unpack_pct%10,
+                         demosaic_pct/10, demosaic_pct%10,
+                         mcu_pct/10, mcu_pct%10,
+                         other_pct/10, other_pct%10);
+        }
+    }
+#endif
     
     return JPEG_PROC_OK;
 }

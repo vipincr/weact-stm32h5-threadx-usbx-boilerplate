@@ -158,9 +158,6 @@ int main(void)
   LED_On();
   HAL_Delay(100U);
   LED_Off();
-  /* Leave LED OFF here; the USBX device thread will drive it so
-   * a solid ON indicates USB bring-up, and OFF indicates USB IRQ traffic.
-   */
   
   /* Track reboot count using RTC backup registers (persists across resets) */
   HAL_PWR_EnableBkUpAccess();
@@ -174,26 +171,11 @@ int main(void)
     g_reboot_count = RTC_ReadBackupRegister(BKUP_REBOOT_COUNTER_IDX) + 1U;
     RTC_WriteBackupRegister(BKUP_REBOOT_COUNTER_IDX, g_reboot_count);
   }
-  
-  /* Log boot messages - these will be buffered until CDC connects */
-  LOG_INFO_TAG("BOOT", "System Reset #%lu", g_reboot_count);
 
-  /* Always enable MSC for hot-plug support.
-   * SD card presence is checked dynamically in MSC callbacks.
-   * This allows SD card to be inserted/removed at runtime.
-   */
+  /* Initialize SD card - required for FatFS.
+   * Simple init, no hot-plug, no MSC mode switching. */
   g_boot_stage = 4U;
-  USBD_MSC_SetEnabled(1);  /* Always enable MSC class */
-  
-  /* Try to init SD card if present (non-blocking check) */
-  if (SDMMC1_QuickDetect())
-  {
-    LOG_INFO_TAG("BOOT", "SD card detected at boot");
-  }
-  else
-  {
-    LOG_INFO_TAG("BOOT", "No SD card at boot (hot-plug supported)");
-  }
+  MX_SDMMC1_SD_Init();
 
   /* Next: ThreadX/USBX init */
   g_boot_stage = 5U;

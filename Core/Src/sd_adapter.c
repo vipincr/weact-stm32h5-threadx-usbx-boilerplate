@@ -65,7 +65,13 @@ int SD_Read(uint8_t *buffer, uint32_t sector, uint32_t count)
         return -1;
     }
     
-    /* Perform read - no locking, just let it fail on contention */
+    /* Wait for card to be ready before starting */
+    if (wait_for_transfer_ready() != 0)
+    {
+        return -1;
+    }
+    
+    /* Perform read */
     if (HAL_SD_ReadBlocks(&hsd1, buffer, sector, count, SD_TIMEOUT_MS) != HAL_OK)
     {
         return -1;
@@ -92,7 +98,13 @@ int SD_Write(const uint8_t *buffer, uint32_t sector, uint32_t count, SD_Source_t
         return -1;
     }
     
-    /* Perform write - no locking, just let it fail on contention */
+    /* Wait for card to be ready before starting */
+    if (wait_for_transfer_ready() != 0)
+    {
+        return -1;
+    }
+    
+    /* Perform write */
     if (HAL_SD_WriteBlocks(&hsd1, (uint8_t *)buffer, sector, count, SD_TIMEOUT_MS) != HAL_OK)
     {
         return -1;

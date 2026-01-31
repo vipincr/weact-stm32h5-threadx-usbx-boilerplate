@@ -14,6 +14,7 @@
 #include "fs_reader.h"
 #include "jpeg_processor.h"
 #include "sd_adapter.h"
+#include "sdmmc.h"
 #include "usb.h"
 #include "stm32h5xx_hal.h"
 #include <string.h>
@@ -117,6 +118,13 @@ static void scan_and_process_bin_files(const char *path, int depth)
     
     LOG_DEBUG_TAG("BTN", "Scanning: %s (depth=%d)", path, depth);
     
+    /* Check if filesystem is still mounted */
+    if (!FS_Reader_IsMounted())
+    {
+        LOG_ERROR_TAG("BTN", "FS not mounted!");
+        return;
+    }
+    
     res = f_opendir(&dir, path);
     if (res != FR_OK)
     {
@@ -124,12 +132,14 @@ static void scan_and_process_bin_files(const char *path, int depth)
         return;
     }
     
+    LOG_DEBUG_TAG("BTN", "opendir OK, starting readdir loop");
+    
     for (;;)
     {
         res = f_readdir(&dir, &fno);
         if (res != FR_OK)
         {
-            LOG_ERROR_TAG("BTN", "readdir error: %d", (int)res);
+            LOG_ERROR_TAG("BTN", "readdir error: %d (sd_init=%d)", (int)res, SDMMC1_IsInitialized());
             break;
         }
         if (fno.fname[0] == '\0')
@@ -305,8 +315,11 @@ static void handle_double_click(void)
             LOG_DEBUG_TAG("BTN", "Signaling media change to host");
         }
         
-        /* Step 3: Set MSC mode */
+        /* Step 3: Set MSC mode - MSC callbacks will now allow SD access */
         SD_SetMode(SD_MODE_MSC);
+        
+        /* Signal media change so host re-queries the device */
+        SD_SetMediaChanged();
         
         LOG_INFO_TAG("BTN", "MSC mode active - disk visible to host");
     }

@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "sdmmc.h"  /* For USBD_MSC_IsEnabled() */
+#include "sdmmc.h"  /* For SDMMC1_IsInitialized() */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -150,7 +150,7 @@ void USBD_UpdateClassInstances(void)
   UserClassInstance[0] = CLASS_TYPE_CDC_ACM;  /* Always have CDC */
   
 #if USBD_MSC_CLASS_ACTIVATED == 1U
-  if (USBD_MSC_IsEnabled())
+  if (SDMMC1_IsInitialized())
   {
     UserClassInstance[1] = CLASS_TYPE_MSC;
   }

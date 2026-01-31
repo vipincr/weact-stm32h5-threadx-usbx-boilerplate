@@ -20,7 +20,7 @@
 
 /* Private defines -----------------------------------------------------------*/
 #define FS_READER_THREAD_STACK_SIZE   4096U  /* Stack for FatFs + exFAT + recursion */
-#define FS_READER_THREAD_PRIORITY     25U    /* Lower priority than USB (10) */
+#define FS_READER_THREAD_PRIORITY     8U     /* Higher than USB (10) to mount before USB enumerates */
 
 /* Filesystem monitoring configuration */
 #define FS_MONITOR_MAX_ENTRIES     128U  /* Max total files/dirs to track */
@@ -434,15 +434,15 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
 
     TX_PARAMETER_NOT_USED(thread_input);
 
-    /* Initial stabilization delay - let system boot fully */
-    tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND / 2);  /* 500ms */
+    /* NOTE: SD card is already initialized in main.c before ThreadX starts.
+     * Mount FatFS IMMEDIATELY (before USB starts) to avoid race condition.
+     * USB device thread has a 200ms delay, so we must mount before that.
+     */
     
-    LOG_INFO_TAG("FS", "Waiting for SD card...");
-
-    /* Wait for SD card to be ready */
-    while (!SDMMC1_IsInitialized())
+    if (!SDMMC1_IsInitialized())
     {
-        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
+        LOG_ERROR_TAG("FS", "SD card not initialized");
+        return;
     }
 
     /* Mount the filesystem */
@@ -469,78 +469,18 @@ static VOID fs_reader_thread_entry(ULONG thread_input)
         LOG_INFO_TAG("FS", "Mounted %s filesystem", fs_type);
     }
 
-    /* List root directory and take initial snapshot */
+    /* List root directory once at boot */
     fs_list_directory("/");
-    memset(&fs_snapshot, 0, sizeof(fs_snapshot));
-    fs_take_snapshot_recursive("/", &fs_snapshot, 0);
-    LOG_INFO_TAG("FS", "Monitoring filesystem (%u entries, poll: %us)",
-                 (unsigned)fs_snapshot.count, FS_MONITOR_POLL_SECONDS);
+    
+    LOG_INFO_TAG("FS", "Filesystem ready");
 
-    /* Main monitoring loop - simple polling without MSC detection.
-     * Button press is used to trigger processing, not automatic detection.
+    /* Thread is done - no continuous monitoring needed.
+     * FatFS is accessed only on-demand via button handler.
+     * This thread just sleeps forever to keep the mount valid.
      */
     for (;;)
     {
-        tx_thread_sleep(FS_MONITOR_POLL_SECONDS * TX_TIMER_TICKS_PER_SECOND);
-
-        /* Skip monitoring if MSC is active to avoid conflicts */
-        if (SD_IsMscActive())
-        {
-            continue;
-        }
-
-        /* Skip monitoring if filesystem is unmounted (MSC mode or button switch) */
-        if (!fs_mounted)
-        {
-            continue;
-        }
-
-        /* Check if SD card is still present */
-        if (!SDMMC1_IsInitialized())
-        {
-            LOG_WARN_TAG("FS", "SD card removed");
-            fs_mounted = 0;
-            fs_snapshot.initialized = 0;
-
-            /* Wait for card to be reinserted */
-            while (!SDMMC1_IsInitialized())
-            {
-                tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
-            }
-
-            /* Only remount if in FatFS mode */
-            if (SD_GetMode() == SD_MODE_FATFS)
-            {
-                res = f_mount(&SDFatFs, "", 1);
-                if (res != FR_OK)
-                {
-                    LOG_ERROR_TAG("FS", "Remount failed: %s", fs_result_str(res));
-                    continue;
-                }
-
-                fs_mounted = 1;
-                LOG_INFO_TAG("FS", "SD card reinserted, filesystem remounted");
-                fs_list_directory("/");
-                memset(&fs_snapshot, 0, sizeof(fs_snapshot));
-                fs_take_snapshot_recursive("/", &fs_snapshot, 0);
-            }
-            continue;
-        }
-
-        /* Normal monitoring cycle - take new snapshot and detect changes */
-        memset(&fs_new_snapshot, 0, sizeof(fs_new_snapshot));
-        fs_take_snapshot_recursive("/", &fs_new_snapshot, 0);
-
-        /* Skip change detection if disk error occurred */
-        if (fs_new_snapshot.has_error)
-        {
-            continue;
-        }
-
-        fs_detect_changes(&fs_snapshot, &fs_new_snapshot);
-
-        /* Replace old snapshot with new */
-        memcpy(&fs_snapshot, &fs_new_snapshot, sizeof(fs_snapshot));
+        tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND * 60);  /* Sleep for 1 minute, repeat */
     }
 }
 

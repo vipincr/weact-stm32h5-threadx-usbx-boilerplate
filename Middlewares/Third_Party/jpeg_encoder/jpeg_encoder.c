@@ -1,10 +1,16 @@
 #include "jpeg_encoder.h"
+#include "jpeg_encoder_timing.h"
 #include "JPEGENC.h"
 #include "jpegenc.inl"
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
+
+#if JPEG_TIMING_ENABLED
+/* Global timing data instance */
+jpeg_timing_t g_jpeg_timing;
+#endif
 
 #if defined(FASTMODE)
 /* ARM Cortex-M33 defines __ARM_FEATURE_SIMD32 instead of __ARM_FEATURE_DSP */
@@ -1334,6 +1340,9 @@ static void demosaic_row_bilinear(
 }
 
 int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* config) {
+    JPEG_TIMING_INIT();
+    JPEG_TIMING_FRAME_START();
+    
     if (!stream || !stream->read || !stream->write || !config) {
         jpeg_set_error(JPEG_ENCODER_ERR_INVALID_ARGUMENT, "Invalid stream/config arguments", __func__, __LINE__);
         return -(int)JPEG_ENCODER_ERR_INVALID_ARGUMENT;
@@ -1517,7 +1526,9 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
         
         if (lines_to_read > 0) {
             size_t bytes_to_read = lines_to_read * file_stride;
+            JPEG_TIMING_START(JPEG_TIMING_RAW_READ);
             size_t br = stream->read(stream->read_ctx, raw_file_chunk, bytes_to_read);
+            JPEG_TIMING_END(JPEG_TIMING_RAW_READ);
             
             if (br < bytes_to_read) {
                 // Hit EOF or short read: Fill remainder with zeros (Black)
@@ -1525,6 +1536,7 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
                 memset(raw_file_chunk + br, 0, bytes_to_read - br);
             }
             
+            JPEG_TIMING_START(JPEG_TIMING_UNPACK);
             uint8_t* src = raw_file_chunk;
             for (int k = 0; k < lines_to_read; k++) {
                 int target_idx = start_fill_idx + k;
@@ -1534,6 +1546,7 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
                 }
                 src += file_stride;
             }
+            JPEG_TIMING_END(JPEG_TIMING_UNPACK);
             // file_lines_read += lines_to_read;
         }
 
@@ -1549,6 +1562,7 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
         }
 
         // 5. Process
+        JPEG_TIMING_START(JPEG_TIMING_DEMOSAIC);
         for (int i = 0; i < rows_to_process; i++) {
              int abs_y = y_start + i;
              uint16_t* prev = (abs_y > 0) ? &unpacked_strip[i * width] : NULL;
@@ -1582,12 +1596,15 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
                  }
              }
         }
+        JPEG_TIMING_END(JPEG_TIMING_DEMOSAIC);
 
-           for (int mcu_x = 0; mcu_x < width; mcu_x += mcu_w) {
+        JPEG_TIMING_START(JPEG_TIMING_MCU_PREPARE);
+        for (int mcu_x = 0; mcu_x < width; mcu_x += mcu_w) {
                int pitch = (encode_pixel_type == JPEGE_PIXEL_YUV444) ? (width * 3) : (width * 2);
                int bpp = (encode_pixel_type == JPEGE_PIXEL_YUV444) ? 3 : 2;
              JPEGAddMCU(&jpege, &je, &out_strip[mcu_x * bpp], pitch);
         }
+        JPEG_TIMING_END(JPEG_TIMING_MCU_PREPARE);
     }
     
     JPEGEncodeEnd(&jpege);
