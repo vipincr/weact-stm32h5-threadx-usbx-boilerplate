@@ -12,10 +12,17 @@
 jpeg_timing_t g_jpeg_timing;
 #endif
 
+/*
+ * FASTMODE: STM32H5 / Cortex-M33 optimizations
+ * - ARM ACLE intrinsics: __usat, __smlad, __ssub16, etc.
+ * - Fixed-point arithmetic instead of float
+ * - 4:2:2 subsampling for speed
+ * - USAT for single-cycle saturation
+ */
 #if defined(FASTMODE)
-/* ARM Cortex-M33 defines __ARM_FEATURE_SIMD32 instead of __ARM_FEATURE_DSP */
-#if defined(__ARM_FEATURE_DSP) || defined(__ARM_FEATURE_SIMD32)
+
 #include <arm_acle.h>
+
 /* GCC ARM uses lowercase intrinsics; map uppercase ACLE-style names */
 #ifndef __SSUB16
 #define __SSUB16 __ssub16
@@ -26,15 +33,27 @@ jpeg_timing_t g_jpeg_timing;
 #ifndef __SMLAD
 #define __SMLAD __smlad
 #endif
-#define JPEG_ENC_HAS_DSP 1
-#else
-#define JPEG_ENC_HAS_DSP 0
-#endif
-#define JPEG_ENC_USE_DSP 1
-#else
-#define JPEG_ENC_USE_DSP 0
-#define JPEG_ENC_HAS_DSP 0
-#endif
+
+#define JPEG_ENC_HAS_DSP  1
+#define JPEG_ENC_USE_DSP  1
+
+/* Single-cycle branchless saturation to 0-255 */
+#define CLAMP_SAT(x) do { (x) = __usat((x), 8); } while(0)
+static inline uint8_t clamp_u8(int v) { return (uint8_t)__usat(v, 8); }
+
+#else  /* !FASTMODE */
+
+#define JPEG_ENC_HAS_DSP  0
+#define JPEG_ENC_USE_DSP  0
+
+#define CLAMP_SAT(x) do { if ((x) < 0) (x) = 0; else if ((x) > 255) (x) = 255; } while(0)
+static inline uint8_t clamp_u8(int v) {
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (uint8_t)v;
+}
+
+#endif /* FASTMODE */
 
 #define JPEG_ENC_PACK16(a, b) ((int)(((uint16_t)(int16_t)(a)) | ((uint32_t)(uint16_t)(int16_t)(b) << 16)))
 
@@ -100,13 +119,6 @@ static const uint8_t s_row_has_red_lut[4][2] = {
     {1, 0}, // GRBG
     {0, 1}  // GBRG
 };
-
-static inline uint8_t clamp_u8(int v)
-{
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return (uint8_t)v;
-}
 
 static void init_y_lut(void)
 {
@@ -294,6 +306,13 @@ static inline int ob_adjust(uint16_t v, bool subtract_ob, uint16_t ob)
     if (!subtract_ob) return (int)v;
     return (v > ob) ? (int)(v - ob) : 0;
 }
+
+/* Macro version of ob_adjust for inlining in hot paths */
+#define OB_ADJ(v, sub, ob) ((sub) ? (((v) > (ob)) ? ((int)(v) - (int)(ob)) : 0) : (int)(v))
+
+/* Combined gain+shift for demosaic: (val * gain_fix) >> (8 + shift_down) 
+ * Pre-compute combined_shift = 8 + shift_down at loop start */
+#define APPLY_GAIN_SHIFT(val, gain, combined_shift) (((val) * (gain)) >> (combined_shift))
 
 // JPEG Callbacks
 static int32_t jpeg_write_callback(JPEGE_FILE *pFile, uint8_t *pBuf, int32_t iLen) {
@@ -883,6 +902,7 @@ static void demosaic_row_bilinear_to_yuv444_ref(
 }
 
 // --- Demosaic directly to YUV422 (fast path) ---
+// OPTIMIZED: Unrolled inner loop, macro for ob_adjust, separated edge handling
 static void demosaic_row_bilinear_to_yuv422_fast(
     const uint16_t* restrict row_prev,
     const uint16_t* restrict row_curr,
@@ -897,93 +917,343 @@ static void demosaic_row_bilinear_to_yuv422_fast(
     bool subtract_ob,
     uint16_t ob_value)
 {
-    int row_phase = y & 1;
-
-    for (int x = 0; x < width; x += 2)
+    const int row_phase = y & 1;
+    const int p = ((int)pattern) & 3;
+    
+    /* Precompute row-level pattern values (same for all x) */
+    const int row_has_red = s_row_has_red_lut[p][row_phase];
+    const uint8_t *color_lut_row = s_bayer_color_lut[p][row_phase];
+    
+    /* Check if we have valid prev/next rows (needed for fast path) */
+    const int have_full_rows = (row_prev != NULL && row_next != NULL);
+    
+    int x = 0;
+    
+    /* --- Process first pixel pair (x=0,1) with edge handling --- */
+    if (width >= 2)
+    {
+        int r0=0,g0=0,b0=0;
+        int r1=0,g1=0,b1=0;
+        
+        /* Pixel 0 (x=0): left edge, need fallback */
+        {
+            int val = OB_ADJ(row_curr[0], subtract_ob, ob_value);
+            int pixel_color = color_lut_row[0];
+            
+            int h_sum = 0, h_cnt = 0;
+            int v_sum = 0, v_cnt = 0;
+            int d_sum = 0, d_cnt = 0;
+            
+            /* x=0: no left neighbor, has right neighbor */
+            h_sum = OB_ADJ(row_curr[1], subtract_ob, ob_value); h_cnt = 1;
+            if (row_prev) { v_sum += OB_ADJ(row_prev[0], subtract_ob, ob_value); v_cnt++; }
+            if (row_next) { v_sum += OB_ADJ(row_next[0], subtract_ob, ob_value); v_cnt++; }
+            if (row_prev) { d_sum += OB_ADJ(row_prev[1], subtract_ob, ob_value); d_cnt++; }
+            if (row_next) { d_sum += OB_ADJ(row_next[1], subtract_ob, ob_value); d_cnt++; }
+            
+            if (pixel_color == 1) {
+                g0 = val;
+                if (row_has_red) { if (h_cnt) r0 = h_sum / h_cnt; if (v_cnt) b0 = v_sum / v_cnt; }
+                else             { if (h_cnt) b0 = h_sum / h_cnt; if (v_cnt) r0 = v_sum / v_cnt; }
+            } else if (pixel_color == 0) {
+                r0 = val;
+                if (h_cnt + v_cnt > 0) g0 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) b0 = d_sum / d_cnt;
+            } else {
+                b0 = val;
+                if (h_cnt + v_cnt > 0) g0 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) r0 = d_sum / d_cnt;
+            }
+        }
+        
+        /* Pixel 1 (x=1): has both neighbors if prev/next exist */
+        if (have_full_rows && width > 2)
+        {
+            /* Fast path for x=1 */
+            int val = OB_ADJ(row_curr[1], subtract_ob, ob_value);
+            int pixel_color = color_lut_row[1];
+            
+            int h_sum = OB_ADJ(row_curr[0], subtract_ob, ob_value) + OB_ADJ(row_curr[2], subtract_ob, ob_value);
+            int v_sum = OB_ADJ(row_prev[1], subtract_ob, ob_value) + OB_ADJ(row_next[1], subtract_ob, ob_value);
+            
+            if (pixel_color == 1) {
+                if (row_has_red) { r1 = h_sum >> 1; b1 = v_sum >> 1; }
+                else             { b1 = h_sum >> 1; r1 = v_sum >> 1; }
+                g1 = val;
+            } else if (pixel_color == 0) {
+                r1 = val;
+                g1 = (h_sum + v_sum) >> 2;
+                b1 = (OB_ADJ(row_prev[0], subtract_ob, ob_value) + OB_ADJ(row_prev[2], subtract_ob, ob_value) +
+                      OB_ADJ(row_next[0], subtract_ob, ob_value) + OB_ADJ(row_next[2], subtract_ob, ob_value)) >> 2;
+            } else {
+                b1 = val;
+                g1 = (h_sum + v_sum) >> 2;
+                r1 = (OB_ADJ(row_prev[0], subtract_ob, ob_value) + OB_ADJ(row_prev[2], subtract_ob, ob_value) +
+                      OB_ADJ(row_next[0], subtract_ob, ob_value) + OB_ADJ(row_next[2], subtract_ob, ob_value)) >> 2;
+            }
+        }
+        else
+        {
+            /* Fallback for x=1 */
+            int val = OB_ADJ(row_curr[1], subtract_ob, ob_value);
+            int pixel_color = color_lut_row[1];
+            
+            int h_sum = 0, h_cnt = 0;
+            int v_sum = 0, v_cnt = 0;
+            int d_sum = 0, d_cnt = 0;
+            
+            h_sum = OB_ADJ(row_curr[0], subtract_ob, ob_value); h_cnt++;
+            if (width > 2) { h_sum += OB_ADJ(row_curr[2], subtract_ob, ob_value); h_cnt++; }
+            if (row_prev) { v_sum += OB_ADJ(row_prev[1], subtract_ob, ob_value); v_cnt++; }
+            if (row_next) { v_sum += OB_ADJ(row_next[1], subtract_ob, ob_value); v_cnt++; }
+            if (row_prev) { d_sum += OB_ADJ(row_prev[0], subtract_ob, ob_value); d_cnt++; }
+            if (row_prev && width > 2) { d_sum += OB_ADJ(row_prev[2], subtract_ob, ob_value); d_cnt++; }
+            if (row_next) { d_sum += OB_ADJ(row_next[0], subtract_ob, ob_value); d_cnt++; }
+            if (row_next && width > 2) { d_sum += OB_ADJ(row_next[2], subtract_ob, ob_value); d_cnt++; }
+            
+            if (pixel_color == 1) {
+                g1 = val;
+                if (row_has_red) { if (h_cnt) r1 = h_sum / h_cnt; if (v_cnt) b1 = v_sum / v_cnt; }
+                else             { if (h_cnt) b1 = h_sum / h_cnt; if (v_cnt) r1 = v_sum / v_cnt; }
+            } else if (pixel_color == 0) {
+                r1 = val;
+                if (h_cnt + v_cnt > 0) g1 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) b1 = d_sum / d_cnt;
+            } else {
+                b1 = val;
+                if (h_cnt + v_cnt > 0) g1 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) r1 = d_sum / d_cnt;
+            }
+        }
+        
+        /* Apply gains and convert to YUV */
+        int r0_i = (r0 * r_gain_fix) >> 8;
+        int b0_i = (b0 * b_gain_fix) >> 8;
+        int g0_i = (g0 * s_g_gain_fix) >> 8;
+        int r1_i = (r1 * r_gain_fix) >> 8;
+        int b1_i = (b1 * b_gain_fix) >> 8;
+        int g1_i = (g1 * s_g_gain_fix) >> 8;
+        
+        r0_i >>= shift_down; g0_i >>= shift_down; b0_i >>= shift_down;
+        r1_i >>= shift_down; g1_i >>= shift_down; b1_i >>= shift_down;
+        
+        CLAMP_SAT(r0_i); CLAMP_SAT(g0_i); CLAMP_SAT(b0_i);
+        CLAMP_SAT(r1_i); CLAMP_SAT(g1_i); CLAMP_SAT(b1_i);
+        
+        int rg0 = JPEG_ENC_PACK16(r0_i, g0_i);
+        int rg1 = JPEG_ENC_PACK16(r1_i, g1_i);
+        
+        int y0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_Y_RG, b0_i * JPEG_ENC_COEF_Y_B) >> 12;
+        int y1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_Y_RG, b1_i * JPEG_ENC_COEF_Y_B) >> 12;
+        int cb0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CB_RG, b0_i << 11) >> 12;
+        int cr0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CR_RG, b0_i * JPEG_ENC_COEF_CR_B) >> 12;
+        int cb1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CB_RG, b1_i << 11) >> 12;
+        int cr1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CR_RG, b1_i * JPEG_ENC_COEF_CR_B) >> 12;
+        
+        int cb = ((cb0 + cb1) >> 1) + 128;
+        int cr = ((cr0 + cr1) >> 1) + 128;
+        cb = clamp_u8(cb);
+        cr = clamp_u8(cr);
+        
+        CLAMP_SAT(y0); CLAMP_SAT(y1);
+        y0 = s_y_lut[y0];
+        y1 = s_y_lut[y1];
+        
+        yuv_out[0] = (uint8_t)y0;
+        yuv_out[1] = (uint8_t)cb;
+        yuv_out[2] = (uint8_t)y1;
+        yuv_out[3] = (uint8_t)cr;
+        
+        x = 2;
+    }
+    
+    /* --- MAIN LOOP: Middle pixels (x=2 to width-4) - NO edge checks --- */
+    /* OPTIMIZED: Unrolled two-pixel processing, precomputed pattern values */
+    if (have_full_rows)
+    {
+        const int x_end = (width - 2) & ~1;  /* Round down to even, leave last pair for edge handling */
+        const int color0 = color_lut_row[0];  /* Color at even x positions */
+        const int color1 = color_lut_row[1];  /* Color at odd x positions */
+        const int combined_shift = 8 + shift_down;  /* Combined gain+normalize shift */
+        
+        for (; x < x_end; x += 2)
+        {
+            int r0, g0, b0;
+            int r1, g1, b1;
+            
+            /* Load current row values once */
+            const int c_m1 = OB_ADJ(row_curr[x-1], subtract_ob, ob_value);
+            const int c_0  = OB_ADJ(row_curr[x],   subtract_ob, ob_value);
+            const int c_p1 = OB_ADJ(row_curr[x+1], subtract_ob, ob_value);
+            const int c_p2 = OB_ADJ(row_curr[x+2], subtract_ob, ob_value);
+            
+            /* Load prev row values */
+            const int p_m1 = OB_ADJ(row_prev[x-1], subtract_ob, ob_value);
+            const int p_0  = OB_ADJ(row_prev[x],   subtract_ob, ob_value);
+            const int p_p1 = OB_ADJ(row_prev[x+1], subtract_ob, ob_value);
+            const int p_p2 = OB_ADJ(row_prev[x+2], subtract_ob, ob_value);
+            
+            /* Load next row values */
+            const int n_m1 = OB_ADJ(row_next[x-1], subtract_ob, ob_value);
+            const int n_0  = OB_ADJ(row_next[x],   subtract_ob, ob_value);
+            const int n_p1 = OB_ADJ(row_next[x+1], subtract_ob, ob_value);
+            const int n_p2 = OB_ADJ(row_next[x+2], subtract_ob, ob_value);
+            
+            /* --- Pixel 0 at position x (even, uses color0) --- */
+            {
+                const int h_sum = c_m1 + c_p1;  /* horizontal neighbors */
+                const int v_sum = p_0 + n_0;    /* vertical neighbors */
+                
+                if (color0 == 1) {  /* Green pixel */
+                    if (row_has_red) { r0 = h_sum >> 1; b0 = v_sum >> 1; }
+                    else             { b0 = h_sum >> 1; r0 = v_sum >> 1; }
+                    g0 = c_0;
+                } else if (color0 == 0) {  /* Red pixel */
+                    r0 = c_0;
+                    g0 = (h_sum + v_sum) >> 2;
+                    b0 = (p_m1 + p_p1 + n_m1 + n_p1) >> 2;  /* diagonal */
+                } else {  /* Blue pixel */
+                    b0 = c_0;
+                    g0 = (h_sum + v_sum) >> 2;
+                    r0 = (p_m1 + p_p1 + n_m1 + n_p1) >> 2;  /* diagonal */
+                }
+            }
+            
+            /* --- Pixel 1 at position x+1 (odd, uses color1) --- */
+            {
+                const int h_sum = c_0 + c_p2;   /* horizontal neighbors: curr[x], curr[x+2] */
+                const int v_sum = p_p1 + n_p1;  /* vertical neighbors: prev[x+1], next[x+1] */
+                
+                if (color1 == 1) {  /* Green pixel */
+                    if (row_has_red) { r1 = h_sum >> 1; b1 = v_sum >> 1; }
+                    else             { b1 = h_sum >> 1; r1 = v_sum >> 1; }
+                    g1 = c_p1;
+                } else if (color1 == 0) {  /* Red pixel */
+                    r1 = c_p1;
+                    g1 = (h_sum + v_sum) >> 2;
+                    b1 = (p_0 + p_p2 + n_0 + n_p2) >> 2;  /* diagonal */
+                } else {  /* Blue pixel */
+                    b1 = c_p1;
+                    g1 = (h_sum + v_sum) >> 2;
+                    r1 = (p_0 + p_p2 + n_0 + n_p2) >> 2;  /* diagonal */
+                }
+            }
+            
+            /* Apply gains with combined shift */
+            int r0_i = APPLY_GAIN_SHIFT(r0, r_gain_fix, combined_shift);
+            int g0_i = APPLY_GAIN_SHIFT(g0, s_g_gain_fix, combined_shift);
+            int b0_i = APPLY_GAIN_SHIFT(b0, b_gain_fix, combined_shift);
+            int r1_i = APPLY_GAIN_SHIFT(r1, r_gain_fix, combined_shift);
+            int g1_i = APPLY_GAIN_SHIFT(g1, s_g_gain_fix, combined_shift);
+            int b1_i = APPLY_GAIN_SHIFT(b1, b_gain_fix, combined_shift);
+            
+            CLAMP_SAT(r0_i); CLAMP_SAT(g0_i); CLAMP_SAT(b0_i);
+            CLAMP_SAT(r1_i); CLAMP_SAT(g1_i); CLAMP_SAT(b1_i);
+            
+            int rg0 = JPEG_ENC_PACK16(r0_i, g0_i);
+            int rg1 = JPEG_ENC_PACK16(r1_i, g1_i);
+            
+            int y0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_Y_RG, b0_i * JPEG_ENC_COEF_Y_B) >> 12;
+            int y1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_Y_RG, b1_i * JPEG_ENC_COEF_Y_B) >> 12;
+            int cb0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CB_RG, b0_i << 11) >> 12;
+            int cr0 = JPEG_ENC_SMLAD(rg0, JPEG_ENC_COEF_CR_RG, b0_i * JPEG_ENC_COEF_CR_B) >> 12;
+            int cb1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CB_RG, b1_i << 11) >> 12;
+            int cr1 = JPEG_ENC_SMLAD(rg1, JPEG_ENC_COEF_CR_RG, b1_i * JPEG_ENC_COEF_CR_B) >> 12;
+            
+            int cb = ((cb0 + cb1) >> 1) + 128;
+            int cr = ((cr0 + cr1) >> 1) + 128;
+            cb = clamp_u8(cb);
+            cr = clamp_u8(cr);
+            
+            CLAMP_SAT(y0); CLAMP_SAT(y1);
+            y0 = s_y_lut[y0];
+            y1 = s_y_lut[y1];
+            
+            int out_idx = x * 2;
+            yuv_out[out_idx + 0] = (uint8_t)y0;
+            yuv_out[out_idx + 1] = (uint8_t)cb;
+            yuv_out[out_idx + 2] = (uint8_t)y1;
+            yuv_out[out_idx + 3] = (uint8_t)cr;
+        }
+    }
+    
+    /* --- Process remaining pixel pairs (last 1-2 pairs with edge handling) --- */
+    for (; x < width; x += 2)
     {
         int r0=0,g0=0,b0=0;
         int r1=0,g1=0,b1=0;
 
-        for (int i = 0; i < 2; i++)
+        /* Pixel 0 */
         {
-            int xi = x + i;
-            int *r = (i == 0) ? &r0 : &r1;
-            int *g = (i == 0) ? &g0 : &g1;
-            int *b = (i == 0) ? &b0 : &b1;
+            int xi = x;
+            int val = OB_ADJ(row_curr[xi], subtract_ob, ob_value);
+            int pixel_color = color_lut_row[xi & 1];
 
-            if (xi >= width) {
-                *r = r0; *g = g0; *b = b0;
-                continue;
-            }
+            int h_sum = 0, h_cnt = 0;
+            int v_sum = 0, v_cnt = 0;
+            int d_sum = 0, d_cnt = 0;
 
-            if (row_prev && row_next && xi > 0 && xi < width - 1) {
-                int val = ob_adjust(row_curr[xi], subtract_ob, ob_value);
-                int p = ((int)pattern) & 3;
-                int pixel_color = s_bayer_color_lut[p][row_phase][xi & 1];
-                int row_has_red = s_row_has_red_lut[p][row_phase];
+            if (xi > 0) { h_sum += OB_ADJ(row_curr[xi-1], subtract_ob, ob_value); h_cnt++; }
+            if (xi < width-1) { h_sum += OB_ADJ(row_curr[xi+1], subtract_ob, ob_value); h_cnt++; }
+            if (row_prev) { v_sum += OB_ADJ(row_prev[xi], subtract_ob, ob_value); v_cnt++; }
+            if (row_next) { v_sum += OB_ADJ(row_next[xi], subtract_ob, ob_value); v_cnt++; }
+            if (row_prev && xi > 0) { d_sum += OB_ADJ(row_prev[xi-1], subtract_ob, ob_value); d_cnt++; }
+            if (row_prev && xi < width-1) { d_sum += OB_ADJ(row_prev[xi+1], subtract_ob, ob_value); d_cnt++; }
+            if (row_next && xi > 0) { d_sum += OB_ADJ(row_next[xi-1], subtract_ob, ob_value); d_cnt++; }
+            if (row_next && xi < width-1) { d_sum += OB_ADJ(row_next[xi+1], subtract_ob, ob_value); d_cnt++; }
 
-                int h_sum = ob_adjust(row_curr[xi-1], subtract_ob, ob_value) + ob_adjust(row_curr[xi+1], subtract_ob, ob_value);
-                int v_sum = ob_adjust(row_prev[xi], subtract_ob, ob_value) + ob_adjust(row_next[xi], subtract_ob, ob_value);
-
-                if (pixel_color == 1) {
-                    if (row_has_red) { *r = h_sum >> 1; *b = v_sum >> 1; }
-                    else             { *b = h_sum >> 1; *r = v_sum >> 1; }
-                    *g = val;
-                } else if (pixel_color == 0) {
-                    *r = val;
-                    *g = (h_sum + v_sum) >> 2;
-                      *b = (ob_adjust(row_prev[xi-1], subtract_ob, ob_value) + ob_adjust(row_prev[xi+1], subtract_ob, ob_value) +
-                          ob_adjust(row_next[xi-1], subtract_ob, ob_value) + ob_adjust(row_next[xi+1], subtract_ob, ob_value)) >> 2;
-                } else {
-                    *b = val;
-                    *g = (h_sum + v_sum) >> 2;
-                      *r = (ob_adjust(row_prev[xi-1], subtract_ob, ob_value) + ob_adjust(row_prev[xi+1], subtract_ob, ob_value) +
-                          ob_adjust(row_next[xi-1], subtract_ob, ob_value) + ob_adjust(row_next[xi+1], subtract_ob, ob_value)) >> 2;
-                }
+            if (pixel_color == 1) {
+                g0 = val;
+                if (row_has_red) { if (h_cnt) r0 = h_sum / h_cnt; if (v_cnt) b0 = v_sum / v_cnt; }
+                else             { if (h_cnt) b0 = h_sum / h_cnt; if (v_cnt) r0 = v_sum / v_cnt; }
+            } else if (pixel_color == 0) {
+                r0 = val;
+                if (h_cnt + v_cnt > 0) g0 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) b0 = d_sum / d_cnt;
             } else {
-                // Edge fallback (slow path)
-                int r_e=0,g_e=0,b_e=0;
-                int val = ob_adjust(row_curr[xi], subtract_ob, ob_value);
-                int p = ((int)pattern) & 3;
-                int pixel_color = s_bayer_color_lut[p][row_phase][xi & 1];
-                int row_has_red = s_row_has_red_lut[p][row_phase];
-
-                int h_sum = 0, h_cnt = 0;
-                int v_sum = 0, v_cnt = 0;
-                int d_sum = 0, d_cnt = 0;
-
-                if (xi > 0) { h_sum += ob_adjust(row_curr[xi-1], subtract_ob, ob_value); h_cnt++; }
-                if (xi < width-1) { h_sum += ob_adjust(row_curr[xi+1], subtract_ob, ob_value); h_cnt++; }
-                if (row_prev) { v_sum += ob_adjust(row_prev[xi], subtract_ob, ob_value); v_cnt++; }
-                if (row_next) { v_sum += ob_adjust(row_next[xi], subtract_ob, ob_value); v_cnt++; }
-                if (row_prev && xi > 0) { d_sum += ob_adjust(row_prev[xi-1], subtract_ob, ob_value); d_cnt++; }
-                if (row_prev && xi < width-1) { d_sum += ob_adjust(row_prev[xi+1], subtract_ob, ob_value); d_cnt++; }
-                if (row_next && xi > 0) { d_sum += ob_adjust(row_next[xi-1], subtract_ob, ob_value); d_cnt++; }
-                if (row_next && xi < width-1) { d_sum += ob_adjust(row_next[xi+1], subtract_ob, ob_value); d_cnt++; }
-
-                if (pixel_color == 1) {
-                    g_e = val;
-                    if (row_has_red) {
-                        if (h_cnt) r_e = h_sum / h_cnt;
-                        if (v_cnt) b_e = v_sum / v_cnt;
-                    } else {
-                        if (h_cnt) b_e = h_sum / h_cnt;
-                        if (v_cnt) r_e = v_sum / v_cnt;
-                    }
-                }
-                else if (pixel_color == 0) {
-                    r_e = val;
-                    if (h_cnt + v_cnt > 0) g_e = (h_sum + v_sum) / (h_cnt + v_cnt);
-                    if (d_cnt) b_e = d_sum / d_cnt;
-                }
-                else {
-                    b_e = val;
-                    if (h_cnt + v_cnt > 0) g_e = (h_sum + v_sum) / (h_cnt + v_cnt);
-                    if (d_cnt) r_e = d_sum / d_cnt;
-                }
-
-                *r = r_e; *g = g_e; *b = b_e;
+                b0 = val;
+                if (h_cnt + v_cnt > 0) g0 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) r0 = d_sum / d_cnt;
             }
+        }
+
+        /* Pixel 1 */
+        if (x + 1 < width)
+        {
+            int xi = x + 1;
+            int val = OB_ADJ(row_curr[xi], subtract_ob, ob_value);
+            int pixel_color = color_lut_row[xi & 1];
+
+            int h_sum = 0, h_cnt = 0;
+            int v_sum = 0, v_cnt = 0;
+            int d_sum = 0, d_cnt = 0;
+
+            if (xi > 0) { h_sum += OB_ADJ(row_curr[xi-1], subtract_ob, ob_value); h_cnt++; }
+            if (xi < width-1) { h_sum += OB_ADJ(row_curr[xi+1], subtract_ob, ob_value); h_cnt++; }
+            if (row_prev) { v_sum += OB_ADJ(row_prev[xi], subtract_ob, ob_value); v_cnt++; }
+            if (row_next) { v_sum += OB_ADJ(row_next[xi], subtract_ob, ob_value); v_cnt++; }
+            if (row_prev && xi > 0) { d_sum += OB_ADJ(row_prev[xi-1], subtract_ob, ob_value); d_cnt++; }
+            if (row_prev && xi < width-1) { d_sum += OB_ADJ(row_prev[xi+1], subtract_ob, ob_value); d_cnt++; }
+            if (row_next && xi > 0) { d_sum += OB_ADJ(row_next[xi-1], subtract_ob, ob_value); d_cnt++; }
+            if (row_next && xi < width-1) { d_sum += OB_ADJ(row_next[xi+1], subtract_ob, ob_value); d_cnt++; }
+
+            if (pixel_color == 1) {
+                g1 = val;
+                if (row_has_red) { if (h_cnt) r1 = h_sum / h_cnt; if (v_cnt) b1 = v_sum / v_cnt; }
+                else             { if (h_cnt) b1 = h_sum / h_cnt; if (v_cnt) r1 = v_sum / v_cnt; }
+            } else if (pixel_color == 0) {
+                r1 = val;
+                if (h_cnt + v_cnt > 0) g1 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) b1 = d_sum / d_cnt;
+            } else {
+                b1 = val;
+                if (h_cnt + v_cnt > 0) g1 = (h_sum + v_sum) / (h_cnt + v_cnt);
+                if (d_cnt) r1 = d_sum / d_cnt;
+            }
+        }
+        else
+        {
+            r1 = r0; g1 = g0; b1 = b0;
         }
 
         int r0_i = (r0 * r_gain_fix) >> 8;
@@ -996,8 +1266,8 @@ static void demosaic_row_bilinear_to_yuv422_fast(
         r0_i >>= shift_down; g0_i >>= shift_down; b0_i >>= shift_down;
         r1_i >>= shift_down; g1_i >>= shift_down; b1_i >>= shift_down;
 
-        if (r0_i > 255) r0_i = 255; if (g0_i > 255) g0_i = 255; if (b0_i > 255) b0_i = 255;
-        if (r1_i > 255) r1_i = 255; if (g1_i > 255) g1_i = 255; if (b1_i > 255) b1_i = 255;
+        CLAMP_SAT(r0_i); CLAMP_SAT(g0_i); CLAMP_SAT(b0_i);
+        CLAMP_SAT(r1_i); CLAMP_SAT(g1_i); CLAMP_SAT(b1_i);
 
         int rg0 = JPEG_ENC_PACK16(r0_i, g0_i);
         int rg1 = JPEG_ENC_PACK16(r1_i, g1_i);
@@ -1014,8 +1284,7 @@ static void demosaic_row_bilinear_to_yuv422_fast(
         cb = clamp_u8(cb);
         cr = clamp_u8(cr);
 
-        if (y0 < 0) y0 = 0; else if (y0 > 255) y0 = 255;
-        if (y1 < 0) y1 = 0; else if (y1 > 255) y1 = 255;
+        CLAMP_SAT(y0); CLAMP_SAT(y1);
         y0 = s_y_lut[y0];
         y1 = s_y_lut[y1];
 
