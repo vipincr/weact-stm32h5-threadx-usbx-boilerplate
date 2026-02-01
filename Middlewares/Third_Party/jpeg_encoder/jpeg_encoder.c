@@ -318,6 +318,15 @@ static inline int ob_adjust(uint16_t v, bool subtract_ob, uint16_t ob)
  * Pre-compute combined_shift = 8 + shift_down at loop start */
 #define APPLY_GAIN_SHIFT(val, gain, combined_shift) (((val) * (gain)) >> (combined_shift))
 
+/* Demosaic algorithm selection:
+ * 0 = Pure bilinear (fastest, slightly lower quality)
+ * 1 = Gradient-corrected for R/B pixels only (good balance)
+ * 2 = Full gradient correction (slower, best quality)
+ */
+#ifndef DEMOSAIC_USE_GRADIENT
+#define DEMOSAIC_USE_GRADIENT 0  /* Default: pure bilinear for speed */
+#endif
+
 // JPEG Callbacks
 static int32_t jpeg_write_callback(JPEGE_FILE *pFile, uint8_t *pBuf, int32_t iLen) {
     jpeg_stream_t* stream = (jpeg_stream_t*)pFile->fHandle;
@@ -1091,6 +1100,7 @@ static void demosaic_row_bilinear_to_yuv422_fast(
             const uint16_t *next = &row_next[x];
             
             /* OB_ADJ_FAST: subtract_ob is always false in this fast path */
+            /* Gradient-corrected bilinear (simplified Malvar-He-Cutler) */
             const int c_m1 = OB_ADJ_FAST(curr[-1]);
             const int c_0  = OB_ADJ_FAST(curr[0]);
             const int c_1  = OB_ADJ_FAST(curr[1]);
@@ -1113,13 +1123,34 @@ static void demosaic_row_bilinear_to_yuv422_fast(
                 const int h_sum = c_m1 + c_1;
                 const int v_sum = p_0 + n_0;
                 if (color0 == 1) {
+                    /* Green pixel: Simple bilinear always */
                     g0 = c_0;
                     if (row_has_red) { r0 = h_sum >> 1; b0 = v_sum >> 1; }
                     else             { b0 = h_sum >> 1; r0 = v_sum >> 1; }
                 } else if (color0 == 0) {
-                    r0 = c_0; g0 = (h_sum + v_sum) >> 2; b0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
+                    r0 = c_0;
+#if DEMOSAIC_USE_GRADIENT >= 1
+                    /* Gradient-corrected interpolation for R/B pixels */
+                    const int d_sum = p_m1 + p_1 + n_m1 + n_1;
+                    const int lap8 = ((c_0 << 2) - d_sum) >> 3;
+                    g0 = ((h_sum + v_sum) >> 2) + lap8;
+                    b0 = (d_sum >> 2) + lap8;
+#else
+                    /* Pure bilinear (fastest) */
+                    g0 = (h_sum + v_sum) >> 2;
+                    b0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
+#endif
                 } else {
-                    b0 = c_0; g0 = (h_sum + v_sum) >> 2; r0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
+                    b0 = c_0;
+#if DEMOSAIC_USE_GRADIENT >= 1
+                    const int d_sum = p_m1 + p_1 + n_m1 + n_1;
+                    const int lap8 = ((c_0 << 2) - d_sum) >> 3;
+                    g0 = ((h_sum + v_sum) >> 2) + lap8;
+                    r0 = (d_sum >> 2) + lap8;
+#else
+                    g0 = (h_sum + v_sum) >> 2;
+                    r0 = (p_m1 + p_1 + n_m1 + n_1) >> 2;
+#endif
                 }
             }
             
@@ -1128,13 +1159,32 @@ static void demosaic_row_bilinear_to_yuv422_fast(
                 const int h_sum = c_0 + c_2;
                 const int v_sum = p_1 + n_1;
                 if (color1 == 1) {
+                    /* Green pixel: Simple bilinear always */
                     g1 = c_1;
                     if (row_has_red) { r1 = h_sum >> 1; b1 = v_sum >> 1; }
                     else             { b1 = h_sum >> 1; r1 = v_sum >> 1; }
                 } else if (color1 == 0) {
-                    r1 = c_1; g1 = (h_sum + v_sum) >> 2; b1 = (p_0 + p_2 + n_0 + n_2) >> 2;
+                    r1 = c_1;
+#if DEMOSAIC_USE_GRADIENT >= 1
+                    const int d_sum = p_0 + p_2 + n_0 + n_2;
+                    const int lap8 = ((c_1 << 2) - d_sum) >> 3;
+                    g1 = ((h_sum + v_sum) >> 2) + lap8;
+                    b1 = (d_sum >> 2) + lap8;
+#else
+                    g1 = (h_sum + v_sum) >> 2;
+                    b1 = (p_0 + p_2 + n_0 + n_2) >> 2;
+#endif
                 } else {
-                    b1 = c_1; g1 = (h_sum + v_sum) >> 2; r1 = (p_0 + p_2 + n_0 + n_2) >> 2;
+                    b1 = c_1;
+#if DEMOSAIC_USE_GRADIENT >= 1
+                    const int d_sum = p_0 + p_2 + n_0 + n_2;
+                    const int lap8 = ((c_1 << 2) - d_sum) >> 3;
+                    g1 = ((h_sum + v_sum) >> 2) + lap8;
+                    r1 = (d_sum >> 2) + lap8;
+#else
+                    g1 = (h_sum + v_sum) >> 2;
+                    r1 = (p_0 + p_2 + n_0 + n_2) >> 2;
+#endif
                 }
             }
             
