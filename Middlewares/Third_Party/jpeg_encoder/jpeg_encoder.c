@@ -923,6 +923,7 @@ static void demosaic_row_bilinear_to_yuv444_ref(
 
 // --- Demosaic directly to YUV422 (fast path) ---
 // OPTIMIZED: Unrolled inner loop, macro for ob_adjust, separated edge handling
+__attribute__((hot))
 static void demosaic_row_bilinear_to_yuv422_fast(
     const uint16_t* restrict row_prev,
     const uint16_t* restrict row_curr,
@@ -1368,6 +1369,7 @@ static void demosaic_row_bilinear_to_yuv422_fast(
 
 // --- Demosaic to YUV422 luma only (fast path) ---
 // Writes Y for each pixel and leaves chroma untouched for caller to fill.
+__attribute__((hot))
 static void demosaic_row_bilinear_to_yuv422_luma_fast(
     const uint16_t* restrict row_prev,
     const uint16_t* restrict row_curr,
@@ -1501,6 +1503,7 @@ static void demosaic_row_bilinear_to_yuv422_luma_fast(
 }
 
 // --- Demosaic directly to YUV444 (fast path) ---
+__attribute__((hot))
 static void demosaic_row_bilinear_to_yuv444_fast(
     const uint16_t* restrict row_prev,
     const uint16_t* restrict row_curr,
@@ -1900,40 +1903,63 @@ int jpeg_encode_stream(jpeg_stream_t* stream, const jpeg_encoder_config_t* confi
              memcpy(lookahead_row_save, &unpacked_strip[lines_needed_in_strip * width], width * sizeof(uint16_t));
         }
 
-        // 5. Process
+        // 5. Process rows
+        // Hoist loop-invariant decisions and use running pointers to
+        // replace per-iteration multiplies with additions.
         JPEG_TIMING_START(JPEG_TIMING_DEMOSAIC);
+        
+        const int is_yuv444 = (encode_pixel_type == JPEGE_PIXEL_YUV444);
+        const int is_420_fast = (!is_yuv444 && use_fast && config->subsample == JPEG_SUBSAMPLE_420);
+        const int is_422_fast = (!is_yuv444 && use_fast && !is_420_fast);
+        const int out_bpp = is_yuv444 ? 3 : 2;
+        const int out_stride = width * out_bpp;
+        const jpeg_bayer_pattern_t bayer = config->bayer_pattern;
+        const uint16_t ob_val = config->ob_value;
+        
+        /* Running pointers: avoid i * width multiply per iteration */
+        uint16_t* strip_prev = unpacked_strip;                 /* strip[0] */
+        uint16_t* strip_curr = unpacked_strip + width;         /* strip[1] */
+        uint16_t* strip_next = unpacked_strip + 2 * width;     /* strip[2] */
+        uint8_t*  out_row    = out_strip;
+        
         for (int i = 0; i < rows_to_process; i++) {
              int abs_y = y_start + i;
-             uint16_t* prev = (abs_y > 0) ? &unpacked_strip[i * width] : NULL;
-             uint16_t* curr = &unpacked_strip[(i+1) * width];
-             uint16_t* next = (abs_y < height-1) ? &unpacked_strip[(i+2) * width] : NULL;
+             uint16_t* prev = (abs_y > 0)          ? strip_prev : NULL;
+             uint16_t* curr = strip_curr;
+             uint16_t* next = (abs_y < height - 1) ? strip_next : NULL;
              
-             if (encode_pixel_type == JPEGE_PIXEL_YUV444) {
+             if (is_yuv444) {
                  if (use_fast) {
-                     demosaic_row_bilinear_to_yuv444_fast(prev, curr, next, &out_strip[i * width * 3], width, abs_y, config->bayer_pattern, r_gain_fix, b_gain_fix, downshift, false, config->ob_value);
+                     demosaic_row_bilinear_to_yuv444_fast(prev, curr, next, out_row, width, abs_y, bayer, r_gain_fix, b_gain_fix, downshift, false, ob_val);
                  } else {
-                     demosaic_row_bilinear_to_yuv444_ref(prev, curr, next, &out_strip[i * width * 3], width, abs_y, config->bayer_pattern, r_gain, b_gain, downshift, false, config->ob_value);
+                     demosaic_row_bilinear_to_yuv444_ref(prev, curr, next, out_row, width, abs_y, bayer, r_gain, b_gain, downshift, false, ob_val);
                  }
-             } else {
-                 if (use_fast && config->subsample == JPEG_SUBSAMPLE_420) {
-                     uint8_t* dst_line = &out_strip[i * width * 2];
-                     bool can_copy_chroma = ((abs_y & 1) != 0) && (i > 0);
-                     if (can_copy_chroma) {
-                         demosaic_row_bilinear_to_yuv422_luma_fast(prev, curr, next, dst_line, width, abs_y, config->bayer_pattern, r_gain_fix, b_gain_fix, downshift, false, config->ob_value);
-                         uint8_t* prev_line = &out_strip[(i - 1) * width * 2];
-                         for (int x = 0; x < width * 2; x += 4) {
-                             dst_line[x + 1] = prev_line[x + 1];
-                             dst_line[x + 3] = prev_line[x + 3];
-                         }
-                     } else {
-                         demosaic_row_bilinear_to_yuv422_fast(prev, curr, next, dst_line, width, abs_y, config->bayer_pattern, r_gain_fix, b_gain_fix, downshift, false, config->ob_value);
+             } else if (is_420_fast) {
+                 bool can_copy_chroma = ((abs_y & 1) != 0) && (i > 0);
+                 if (can_copy_chroma) {
+                     demosaic_row_bilinear_to_yuv422_luma_fast(prev, curr, next, out_row, width, abs_y, bayer, r_gain_fix, b_gain_fix, downshift, false, ob_val);
+                     /* 32-bit word chroma copy: process 4 bytes per iteration        */
+                     /* YUYV layout (little-endian): byte0=Y0, byte1=Cb, byte2=Y1, byte3=Cr */
+                     /* Chroma mask 0xFF00FF00 selects Cb and Cr bytes                */
+                     uint32_t *dst32 = (uint32_t *)out_row;
+                     const uint32_t *prev32 = (const uint32_t *)(out_row - out_stride);
+                     const int n_words = width / 2;  /* width pixels / 2 pixels per YUYV group */
+                     for (int p = 0; p < n_words; p++) {
+                         dst32[p] = (dst32[p] & 0x00FF00FFu) | (prev32[p] & 0xFF00FF00u);
                      }
-                 } else if (use_fast) {
-                     demosaic_row_bilinear_to_yuv422_fast(prev, curr, next, &out_strip[i * width * 2], width, abs_y, config->bayer_pattern, r_gain_fix, b_gain_fix, downshift, false, config->ob_value);
                  } else {
-                     demosaic_row_bilinear_to_yuv422_ref(prev, curr, next, &out_strip[i * width * 2], width, abs_y, config->bayer_pattern, r_gain, b_gain, downshift, false, config->ob_value);
+                     demosaic_row_bilinear_to_yuv422_fast(prev, curr, next, out_row, width, abs_y, bayer, r_gain_fix, b_gain_fix, downshift, false, ob_val);
                  }
+             } else if (is_422_fast) {
+                 demosaic_row_bilinear_to_yuv422_fast(prev, curr, next, out_row, width, abs_y, bayer, r_gain_fix, b_gain_fix, downshift, false, ob_val);
+             } else {
+                 demosaic_row_bilinear_to_yuv422_ref(prev, curr, next, out_row, width, abs_y, bayer, r_gain, b_gain, downshift, false, ob_val);
              }
+             
+             strip_prev += width;
+             strip_curr += width;
+             strip_next += width;
+             out_row    += out_stride;
         }
         JPEG_TIMING_END(JPEG_TIMING_DEMOSAIC);
 
