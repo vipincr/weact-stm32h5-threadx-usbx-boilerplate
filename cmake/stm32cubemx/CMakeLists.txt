@@ -153,6 +153,10 @@ target_sources(JPEG_Encoder PRIVATE ${JPEG_Encoder_Src})
 target_link_libraries(JPEG_Encoder PUBLIC stm32cubemx)
 # Enable fast mode (DSP optimizations) for ARM Cortex-M33
 target_compile_definitions(JPEG_Encoder PRIVATE FASTMODE=1)
+# Force -O3 even in Debug builds: last -O flag wins in GCC
+# -ffast-math: allows reordering of float ops (init-only, not hot path)
+# -funroll-loops: unroll inner demosaic/DCT loops for pipeline efficiency
+target_compile_options(JPEG_Encoder PRIVATE -O3 -ffast-math -funroll-loops)
 
 # =============================================================================
 # Link Configuration
