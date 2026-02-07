@@ -14,10 +14,90 @@ jpeg_timing_t g_jpeg_timing;
 
 /*
  * FASTMODE: STM32H5 / Cortex-M33 optimizations
- * - ARM ACLE intrinsics: __usat, __smlad, __ssub16, etc.
+ * - ARM ACLE intrinsics: __usat, __smlad, __ssub16, __uhadd16, etc.
  * - Fixed-point arithmetic instead of float
  * - 4:2:2 subsampling for speed
  * - USAT for single-cycle saturation
+ *
+ * ═══════════════════════════════════════════════════════════════════════
+ * STM32H5 PERFORMANCE OPTIMIZATION ASSESSMENT
+ * Target: STM32H562RGT6 (Cortex-M33 @250MHz, FPv5-SP, DSP, no Helium)
+ * ═══════════════════════════════════════════════════════════════════════
+ *
+ * IMPLEMENTED OPTIMIZATIONS:
+ *   P0: Force -O3 -ffast-math -funroll-loops (was -O0 in Debug)
+ *   P1: UHADD16 packed vertical sums in demosaic inner loop
+ *   P4: int64_t APPLY_GAIN_SHIFT to eliminate 16-bit overflow
+ *   P5: Caller loop invariant hoisting + 32-bit chroma copy
+ *
+ * ───────────────────────────────────────────────────────────────────────
+ * P2: DMA DOUBLE-BUFFER ARCHITECTURE (NOT IMPLEMENTED - needs HW test)
+ * ───────────────────────────────────────────────────────────────────────
+ * Current bottleneck: SD read blocks CPU via polled HAL_SD_ReadBlocks().
+ * Opportunity: Overlap SD→SRAM DMA transfer with CPU strip processing.
+ *
+ * Architecture:
+ *   Buffer A ──DMA──▶ SRAM    CPU processes Buffer B
+ *   Buffer B ──DMA──▶ SRAM    CPU processes Buffer A  (ping-pong)
+ *
+ * Required changes:
+ *   1. sd_adapter.c: Add SD_Read_DMA() using HAL_SD_ReadBlocks_DMA()
+ *      - Configure GPDMA channel for SDMMC1 RX
+ *      - Register HAL_SD_RxCpltCallback() to signal ThreadX event flag
+ *   2. jpeg_encoder.c: Allocate 2x raw_file_chunk buffers
+ *      - Before processing loop, kick first DMA read
+ *      - In loop: wait_for_dma() → swap buffers → kick next read → process
+ *   3. sdmmc.c: Enable SDMMC DMA in MX_SDMMC1_SD_Init()
+ *      - hsd1.Init.TranceiverPresent = ... (check CubeMX config)
+ *   4. Memory: +20KB (second raw_file_chunk for 8-row strip @ 1280px)
+ *
+ * Estimated speedup: 15-30% if SD read time ≈ processing time.
+ * Risk: DCACHE coherency (need SCB_InvalidateDCache_by_Addr after DMA).
+ *
+ * ───────────────────────────────────────────────────────────────────────
+ * P3: FMAC (Filter Math Accelerator) ASSESSMENT — NOT SUITABLE
+ * ───────────────────────────────────────────────────────────────────────
+ * The STM32H5's FMAC peripheral was evaluated for demosaic acceleration.
+ *
+ * Why FMAC cannot accelerate Bayer demosaicing:
+ *   1. DATA FORMAT: FMAC uses Q1.15 signed fixed-point (-1.0 to +0.9999).
+ *      Bayer sensor data is unsigned 16-bit (0..65535). Conversion to Q1.15
+ *      would halve precision and require signed↔unsigned bookkeeping.
+ *   2. 1D-ONLY FILTER: FMAC implements FIR/IIR on a single data stream.
+ *      Bayer demosaicing requires 2D spatial filtering (3×3 or 5×5 kernel)
+ *      across 3 rows simultaneously. FMAC can only process one row at a time.
+ *   3. ALTERNATING PATTERN: Bayer CFA alternates R/G and G/B rows.
+ *      Different filter coefficients are needed per pixel depending on its
+ *      color phase. FMAC cannot switch coefficients mid-stream.
+ *   4. LATENCY: FMAC startup overhead (~10 cycles to configure + feed data)
+ *      exceeds the savings for short kernel operations. The 3-tap horizontal
+ *      average (c[-1] + c[0] + c[+1]) is just 2 ADD instructions on CPU.
+ *   5. DMA CONFLICT: FMAC uses DMA for data feed. SD card also needs DMA.
+ *      Sharing GPDMA channels adds complexity without clear benefit.
+ *
+ * Conclusion: FMAC is optimized for audio FIR/IIR, not 2D image processing.
+ *
+ * ───────────────────────────────────────────────────────────────────────
+ * P6: FUSED GAIN+YCbCr ASSESSMENT — MARGINAL BENEFIT ON CM33
+ * ───────────────────────────────────────────────────────────────────────
+ * Evaluated fusing WB gain multiplication with YCbCr matrix coefficients
+ * to eliminate the intermediate gain multiply step.
+ *
+ * Why it doesn't help on Cortex-M33:
+ *   1. OVERFLOW: Fused coefficient = gain_q8 × ycbcr_coef_q12. For typical
+ *      gain (1.5x = 384 Q8) and max coef (2404 Q12):
+ *      max_val × fused = 65535 × (384 × 2404) = 65535 × 923136 ≈ 6×10^10
+ *      This overflows int32, requiring int64 multiply (SMULL = 1 cycle but
+ *      64-bit shift needs 3 instructions on CM33). Net: slower than separate.
+ *   2. SMLAD LOSS: Current path uses SMLAD (packed dual multiply-accumulate)
+ *      which does 2 multiplies in 1 cycle. Fused path cannot use SMLAD
+ *      because coefficients differ per channel. Net: lose 2-cycle advantage.
+ *   3. CLAMP ELIMINATION: Removing intermediate clamp risks overflow in
+ *      YCbCr computation. The USAT instruction is already 1 cycle — saving
+ *      6 USAT instructions saves only 6 cycles per pixel pair (< 3% of loop).
+ *
+ * Conclusion: Keep separate gain → clamp → SMLAD pipeline.
+ * ═══════════════════════════════════════════════════════════════════════
  */
 #if defined(FASTMODE)
 
