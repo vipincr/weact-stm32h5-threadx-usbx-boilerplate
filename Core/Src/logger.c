@@ -54,8 +54,12 @@ static int logger_lock(void)
   /* We're in a thread - scheduler must be running */
   scheduler_started = 1U;
   
-  /* Try to acquire mutex with timeout to avoid deadlock */
-  if (tx_mutex_get(&logger_mutex, TX_WAIT_FOREVER) == TX_SUCCESS)
+  /* Short timeout to avoid blocking USBX / MSC threads.
+   * If the mutex is held by a CDC flush, we drop this message rather
+   * than stalling time-critical USB operations.  50 ms is enough for
+   * a normal CDC write to complete but short enough to prevent
+   * cascading thread stalls. */
+  if (tx_mutex_get(&logger_mutex, 5U) == TX_SUCCESS)
     return 1;
   
   return 0;
@@ -108,11 +112,25 @@ static void ring_flush(void)
   ULONG actual;
   char chunk[64];
   uint32_t chunk_len;
-  
-  /* Only flush if terminal is actually connected and ready */
-  if (!terminal_ready())
+
+  /* Take a local copy of the CDC instance pointer to prevent TOCTOU race.
+   * USBD_CDC_ACM_Deactivate (higher-priority USBX thread) can set the
+   * global to NULL between our check and the write call. */
+  UX_SLAVE_CLASS_CDC_ACM *cdc = cdc_acm_instance_ptr;
+
+  if (cdc == UX_NULL)
     return;
-  
+
+  /* Check DTR via the local pointer */
+  {
+    ULONG line_state = 0U;
+    ux_device_class_cdc_acm_ioctl(cdc,
+                                  UX_SLAVE_CLASS_CDC_ACM_IOCTL_GET_LINE_STATE,
+                                  &line_state);
+    if (!(line_state & UX_SLAVE_CLASS_CDC_ACM_LINE_STATE_DTR))
+      return;
+  }
+
   while (ring_tail != ring_head)
   {
     chunk_len = 0;
@@ -123,7 +141,15 @@ static void ring_flush(void)
     }
     if (chunk_len > 0)
     {
-      ux_device_class_cdc_acm_write(cdc_acm_instance_ptr, (UCHAR*)chunk, chunk_len, &actual);
+      /* Re-verify pointer: deactivation may have occurred during a
+       * previous chunk write in this same flush loop. */
+      if (cdc_acm_instance_ptr == UX_NULL)
+        break;
+
+      UINT ux_status = ux_device_class_cdc_acm_write(cdc, (UCHAR*)chunk,
+                                                     chunk_len, &actual);
+      if (ux_status != UX_SUCCESS)
+        break;  /* Endpoint stalled / host not reading - stop flushing */
     }
   }
 }

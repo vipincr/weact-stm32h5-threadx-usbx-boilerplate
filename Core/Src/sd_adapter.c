@@ -210,6 +210,7 @@ int SD_IsFatFsBusy(void)
 void SD_SetMediaChanged(void)
 {
     media_changed = 1U;
+    __DSB();  /* Ensure flag is visible to MSC polling thread immediately */
     /* NOTE: Do NOT set media_ejected here!
      * Ejected flag is ONLY set by USBD_STORAGE_EjectNotify() 
      * when host sends SCSI START_STOP_UNIT with eject bit. */
@@ -219,6 +220,7 @@ void SD_SetEjected(void)
 {
     media_ejected = 1U;
     media_changed = 1U;  /* Eject also triggers UNIT ATTENTION */
+    __DSB();  /* Both flags must be visible before any status query */
 }
 
 int SD_ConsumeMediaChanged(void)
@@ -240,6 +242,7 @@ void SD_ClearEjected(void)
 {
     media_ejected = 0U;
     media_changed = 0U;
+    __DSB();
 }
 
 SD_Mode_t SD_GetMode(void)
@@ -250,6 +253,7 @@ SD_Mode_t SD_GetMode(void)
 void SD_SetMode(SD_Mode_t mode)
 {
     current_mode = mode;
+    __DSB();  /* Mode change must be visible to all threads before we return */
 }
 
 int SD_IsMscAllowed(void)

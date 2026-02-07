@@ -62,7 +62,6 @@ static volatile int fs_mounted = 0;
 
 /* Filesystem snapshot for change detection */
 static FS_Snapshot_t fs_snapshot;
-static FS_Snapshot_t fs_new_snapshot;  /* Second snapshot for comparison (too large for stack) */
 
 /* User-registered callback for change notifications */
 static FS_ChangeCallback_t fs_change_callback = NULL;

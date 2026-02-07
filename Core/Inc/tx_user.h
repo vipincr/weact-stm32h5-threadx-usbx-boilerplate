@@ -73,10 +73,13 @@
 /* USER CODE BEGIN 1 */
 
 /* Use BASEPRI instead of PRIMASK for ThreadX critical sections.
- * This allows high-priority interrupts (like USB at priority 0) to run
- * even during ThreadX critical sections, preventing USB enumeration failures.
- * BASEPRI value 0x40 masks priorities 2-15 but allows 0-1 to run.
- * (STM32H5 has 4 priority bits, so 0x40 >> 4 = 4, meaning priorities >= 4 are masked)
+ * BASEPRI = 0x40 on STM32H5 (4 priority bits, shifted to [7:4]) gives a
+ * threshold of group priority 4.  Priorities 0-3 are "zero-latency" and
+ * bypass ThreadX — they MUST NOT call any ThreadX API from their ISR.
+ * Priorities 4-15 are managed by ThreadX.
+ *
+ * All peripherals whose ISR touches ThreadX objects (USB, SDMMC, etc.)
+ * MUST have NVIC priority >= 4 (i.e., the register value >= 0x40).
  */
 #define TX_PORT_USE_BASEPRI
 #define TX_PORT_BASEPRI                         (0x40)

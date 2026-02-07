@@ -349,7 +349,26 @@ static void handle_double_click(void)
         /* Step 2: Clear ejected flag (we're taking over the disk now) */
         SD_ClearEjected();
         
-        /* Step 3: Mount FatFS */
+        /* Step 3: Let SD card settle after MSC activity.
+         * The host may have been doing I/O right up until the eject.
+         * Wait for the card to finish any internal housekeeping (wear-levelling,
+         * flush, etc.) before re-mounting the filesystem. */
+        tx_thread_sleep(10U);  /* 100ms settle time */
+        
+        /* Step 4: Wait for SD card to be ready (transfer state) */
+        if (!SD_IsReady())
+        {
+            /* Card still busy - give it more time */
+            tx_thread_sleep(50U);  /* 500ms additional */
+            if (!SD_IsReady())
+            {
+                LOG_ERROR_TAG("BTN", "SD card not ready after MSC - reverting");
+                SD_SetMode(SD_MODE_MSC);
+                return;
+            }
+        }
+        
+        /* Step 5: Mount FatFS */
         if (FS_Reader_Mount() == 0)
         {
             /* Success */

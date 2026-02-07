@@ -120,9 +120,11 @@ VOID USBD_CDC_ACM_Activate(VOID *cdc_acm_instance)
                                 &line_coding);
 
 #ifndef UX_STANDALONE
-  /* Set write timeout to avoid indefinite blocking if host stops reading */
-  /* Timeout: 100ms (assuming 1ms tick) */
-  ULONG write_timeout = 100;
+  /* Set write timeout to avoid indefinite blocking if host stops reading.
+   * 10 ticks = 100ms at 100 ticks/sec.  Keep short so the logger mutex
+   * is not held for extended periods, which would stall MSC and other
+   * threads that try to log. */
+  ULONG write_timeout = 10;
   ux_device_class_cdc_acm_ioctl(cdc_acm_instance_ptr,
                                 UX_SLAVE_CLASS_CDC_ACM_IOCTL_SET_WRITE_TIMEOUT,
                                 &write_timeout);

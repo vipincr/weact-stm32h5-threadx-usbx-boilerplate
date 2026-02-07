@@ -98,11 +98,14 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_EnableIRQ(USB_DRD_FS_IRQn);
   /* USER CODE BEGIN USB_DRD_FS_MspInit 1 */
 
-    /* Match WeAct USBX examples: keep USB IRQ at highest priority.
-     * This avoids edge cases where RTOS critical sections (BASEPRI) mask the IRQ.
-     * If/when we confirm enumeration is stable, we can revisit RTOS-friendly priorities.
-     */
-    HAL_NVIC_SetPriority(USB_DRD_FS_IRQn, 0, 0);
+    /* USB IRQ must be within the ThreadX-managed priority range.
+     * TX_PORT_BASEPRI = 0x40 → threshold = group 4 on STM32H5 (4 priority bits).
+     * Priorities 0-3 bypass BASEPRI and MUST NOT call ThreadX APIs from ISR,
+     * but the USBX DCD does exactly that (semaphore put, etc.).  Priority 5 is
+     * safely managed by ThreadX while still being the highest peripheral IRQ
+     * below the kernel threshold.  USB Full Speed tolerates the microsecond
+     * deferral during ThreadX critical sections without any issue. */
+    HAL_NVIC_SetPriority(USB_DRD_FS_IRQn, 5, 0);
 
   /* USER CODE END USB_DRD_FS_MspInit 1 */
   }

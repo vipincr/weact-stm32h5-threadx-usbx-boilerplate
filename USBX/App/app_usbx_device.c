@@ -280,15 +280,10 @@ static VOID app_ux_device_thread_entry(ULONG thread_input)
   /* USER CODE BEGIN app_ux_device_thread_entry */
   TX_PARAMETER_NOT_USED(thread_input);
 
-  /* Startup delay - allow other subsystems to initialize first */
+  /* Startup delay - allow other subsystems (FatFS mount, logger) to
+   * initialize first.  FS reader thread (priority 8) mounts FatFS
+   * during this window, before USB enumeration begins. */
   tx_thread_sleep(20U);  /* 200ms at 100 ticks/sec */
-
-  /* Defensive: make sure we are not running with IRQs masked.
-   * If ThreadX low-level init ever leaves PRIMASK/BASEPRI asserted,
-   * USB will appear totally dead (no enumeration).
-   */
-  __enable_irq();
-  __set_BASEPRI(0U);
 
   /* Initialize the USB device controller HAL driver */
   MX_USB_PCD_Init();
