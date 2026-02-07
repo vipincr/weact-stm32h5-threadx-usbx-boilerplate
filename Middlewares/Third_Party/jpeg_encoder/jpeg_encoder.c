@@ -315,8 +315,12 @@ static inline int ob_adjust(uint16_t v, bool subtract_ob, uint16_t ob)
 #define OB_ADJ_FAST(v) ((int)(v))
 
 /* Combined gain+shift for demosaic: (val * gain_fix) >> (8 + shift_down) 
- * Pre-compute combined_shift = 8 + shift_down at loop start */
-#define APPLY_GAIN_SHIFT(val, gain, combined_shift) (((val) * (gain)) >> (combined_shift))
+ * Pre-compute combined_shift = 8 + shift_down at loop start.
+ * Use int64_t to avoid overflow for 16-bit Bayer * Q8 gain products.
+ * On Cortex-M33, GCC emits SMULL (single-cycle 32x32→64) + register shift,
+ * which is safe for the full value range and avoids silent truncation. */
+#define APPLY_GAIN_SHIFT(val, gain, combined_shift) \
+    ((int)(((int64_t)(val) * (int64_t)(gain)) >> (combined_shift)))
 
 /* Demosaic algorithm selection:
  * 0 = Pure bilinear (fastest, slightly lower quality)
